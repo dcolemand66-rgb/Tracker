@@ -15,6 +15,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "973257404060-3h4tcu729bc5fvga7hbo88vcr0adsfrd.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.demarcus3456.trackerapp",
+            "certificate_hash": "cfc58a0fc3347bf29fdd4a70ff3df2e5a44961bd"
+          }
+        },
+        {
           "client_id": "973257404060-intr90dmk8rib6eqpm30sgesqok0pn2l.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

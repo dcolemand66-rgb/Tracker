@@ -33,7 +33,8 @@
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
       "expo-web-browser",
-      "expo-asset"
+      "expo-asset",
+      "./plugins/withAndroidLargeHeap.js"
     ],
     "experiments": {
       "typedRoutes": true,
@@ -41,9 +42,8 @@
     },
     "extra": {
       "eas": {
-        "projectId": "070aacc1-efae-42fe-b8a2-637cab1a1634"
+        "projectId": "563c0caa-3fde-492b-ad10-b64451392956"
       }
-    },
-    "owner": "demarcus1234"
+    }
   }
 }

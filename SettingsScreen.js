@@ -24,23 +24,6 @@ const WEB_CLIENT_ID = '973257404060-grcm9hekanhh1ct8i27sfrtkf9b0oqg7.apps.google
 
 GoogleSignin.configure({ webClientId: WEB_CLIENT_ID });
 
-// A rough but genuinely useful estimate - not the exact on-disk size
-// (chunking/compression means the real number differs slightly), but
-// accurate enough to answer the actual question: which category is
-// actually eating the storage.
-function estimateBytes(collection) {
-  try {
-    return JSON.stringify(collection).length;
-  } catch (e) {
-    return 0;
-  }
-}
-function formatBytes(n) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
-
 export default function SettingsScreen({
   googleUser,
   setGoogleUser,
@@ -55,10 +38,7 @@ export default function SettingsScreen({
   setCalendarViewMode,
   habits,
   setHabits,
-  saveError,
   loadError,
-  storageBreakdown,
-  saveBytes,
   meditationSettings,
   setMeditationSettings,
   applyFullPayload,
@@ -272,64 +252,11 @@ export default function SettingsScreen({
     );
   }
 
-  const breakdownEntries = storageBreakdown
-    ? Object.entries(storageBreakdown)
-        .map(([label, collection]) => ({ label, bytes: estimateBytes(collection) }))
-        .sort((a, b) => b.bytes - a.bytes)
-    : [];
-  const breakdownTotal = breakdownEntries.reduce((sum, e) => sum + e.bytes, 0);
-
   return (
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={shared.container}>
         <Text style={shared.h1}>Settings</Text>
         <Text style={shared.tagline}>Your account and app preferences</Text>
-
-        <View style={shared.blockAccent}>
-          <Text style={styles.sectionLabel}>Storage</Text>
-          {saveError ? (
-            <Text style={styles.storageBad}>
-              ⚠️ Last save failed: {saveError}
-            </Text>
-          ) : (
-            <Text style={styles.storageOk}>✓ Last save succeeded</Text>
-          )}
-          <Text style={{ color: DIM, fontSize: 12, marginTop: 4, marginBottom: 10 }}>
-            Last successful save: {saveBytes ? formatBytes(saveBytes) : '—'}
-          </Text>
-          {breakdownEntries.length > 0 ? (
-            <>
-              <Text style={{ color: DIM, fontSize: 11, marginBottom: 8 }}>
-                What's actually using space right now, biggest first:
-              </Text>
-              {breakdownEntries.map((e) => (
-                <View key={e.label} style={{ marginBottom: 8 }}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 3 }}>
-                    <Text style={{ color: INK, fontSize: 13 }}>{e.label}</Text>
-                    <Text style={{ color: GOLD, fontSize: 13, fontWeight: '700' }}>{formatBytes(e.bytes)}</Text>
-                  </View>
-                  <View style={{ height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
-                    <View
-                      style={{
-                        height: '100%',
-                        width: `${breakdownTotal > 0 ? Math.max(2, (e.bytes / breakdownTotal) * 100) : 0}%`,
-                        backgroundColor: GOLD,
-                        borderRadius: 3,
-                      }}
-                    />
-                  </View>
-                </View>
-              ))}
-              <Text style={{ color: DIM, fontSize: 11, marginTop: 6 }}>
-                Most of this is photos - each one is stored as image data, not a
-                link, so categories with lots of photos (Restaurants and its
-                menu items especially) add up fastest. If storage is full,
-                removing a few photos from the largest category above is the
-                most direct way to free up space right now.
-              </Text>
-            </>
-          ) : null}
-        </View>
 
         <View style={shared.block}>
           <Text style={styles.sectionLabel}>Account</Text>
@@ -510,8 +437,6 @@ export default function SettingsScreen({
 }
 
 const styles = StyleSheet.create({
-  storageOk: { color: '#4f9e5c', fontSize: 13, fontWeight: '700' },
-  storageBad: { color: ROSE, fontSize: 13, fontWeight: '600', lineHeight: 19 },
   sectionLabel: {
     fontSize: 12,
     fontWeight: '700',
@@ -598,4 +523,5 @@ const styles = StyleSheet.create({
   optionChipText: { color: INK, fontSize: 13, fontWeight: '600' },
   optionChipTextSel: { color: '#fff', fontWeight: '800' },
 });
+
 

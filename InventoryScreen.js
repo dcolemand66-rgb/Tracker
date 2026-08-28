@@ -162,8 +162,6 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
       image: null,
     });
     setItemPrice('');
-    setKrogerResults(null);
-    setKrogerError('');
     setModalOpen(true);
   }
 
@@ -178,8 +176,6 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
       image: item.image || null,
     });
     setItemPrice(String(latestInventoryPrice(item) || ''));
-    setKrogerResults(null);
-    setKrogerError('');
     setModalOpen(true);
   }
 
@@ -224,6 +220,19 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
       setInventory((prev) => [...prev, item]);
     }
     setModalOpen(false);
+  }
+
+  function deleteItemById(id) {
+    Alert.alert('Delete item?', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setInventory((prev) => prev.filter((it) => it.id !== id));
+        },
+      },
+    ]);
   }
 
   function deleteItem() {
@@ -273,7 +282,13 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
                 </View>
               </View>
               {flagged.map(({ it, st }) => (
-                <TouchableOpacity key={it.id} style={shared.row} onPress={() => openEdit(it)}>
+                <TouchableOpacity
+                  key={it.id}
+                  style={shared.row}
+                  onPress={() => openEdit(it)}
+                  onLongPress={() => deleteItemById(it.id)}
+                  delayLongPress={400}
+                >
                   <View style={{ flex: 1 }}>
                     <Text style={shared.rowName}>{it.name}</Text>
                     <Text style={styles.spoilMeta}>{it.category}</Text>
@@ -335,6 +350,8 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
                     key={it.id}
                     style={shared.row}
                     onPress={() => openEdit(it)}
+                    onLongPress={() => deleteItemById(it.id)}
+                    delayLongPress={400}
                   >
                     {it.image ? (
                       <Image source={{ uri: it.image }} style={shared.thumb44} />
@@ -532,9 +549,6 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
               ) : null}
 
               <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16 }} />
-              <Text style={{ color: DIM, fontSize: 12, marginBottom: 16 }}>
-                Price checking has moved to Groceries - use that tab to look up real prices.
-              </Text>
 
               <Text style={styles.label}>Price</Text>
               <TextInput
@@ -686,4 +700,5 @@ const styles = StyleSheet.create({
   cancelBtn: { paddingVertical: 10, alignItems: 'center', marginTop: 2 },
   cancelBtnText: { color: DIM, fontSize: 14 },
 });
+
 

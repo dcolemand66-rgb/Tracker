@@ -42,6 +42,7 @@ import { ensureNotificationPermissions, resyncAllHabitNotifications } from './no
 import { GOLD, INK, DIM, CARD, BORDER, BLUE, ROSE, glowRose } from './theme';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { signInToFirebaseWithGoogle, pushBackupToCloud, pullBackupFromCloud } from './firebaseSync';
+import { migrateBase64PhotosToFiles } from './photoMigration';
 
 const STORAGE_KEY = 'tracker_expo_data_v12';
 
@@ -275,6 +276,10 @@ function MainApp() {
     async function load() {
       try {
         const saved = (await loadChunked(STORAGE_KEY)) || {};
+        // One-time cleanup: convert any photos still stored as base64
+        // (from before photos were saved to disk) into files, in place,
+        // before any of it is loaded into state below.
+        await migrateBase64PhotosToFiles(saved);
         setInventory(saved.inventory || []);
         setCards(saved.cards || []);
         setDatingPlaces(saved.datingPlaces || []);
@@ -802,6 +807,7 @@ function MainApp() {
                 reference, not a photo standing in for it. */}
             <View style={styles.sunDisc} />
             <Text style={styles.drawerTitle}>TRACKER</Text>
+            <View style={styles.drawerTitleRule} />
             {drawerSubmenu ? (
               <>
                 <TouchableOpacity
@@ -823,28 +829,28 @@ function MainApp() {
               </>
             ) : (
               NAV_ITEMS.map((item, i) => (
-                <React.Fragment key={item.key}>
-                  <TouchableOpacity
+                <TouchableOpacity
+                  key={item.key}
+                  style={[
+                    styles.drawerItem,
+                    tab === item.key && styles.drawerItemSel,
+                  ]}
+                  onPress={() => selectTab(item.key)}
+                  activeOpacity={0.75}
+                >
+                  <View style={[styles.drawerIconBadge, tab === item.key && styles.drawerIconBadgeSel]}>
+                    <Text style={styles.drawerIcon}>{item.icon}</Text>
+                  </View>
+                  <Text
                     style={[
-                      styles.drawerItem,
-                      tab === item.key && styles.drawerItemSel,
+                      styles.drawerLabel,
+                      tab === item.key && styles.drawerLabelSel,
                     ]}
-                    onPress={() => selectTab(item.key)}
                   >
-                    <View style={[styles.drawerIconBadge, tab === item.key && styles.drawerIconBadgeSel]}>
-                      <Text style={styles.drawerIcon}>{item.icon}</Text>
-                    </View>
-                    <Text
-                      style={[
-                        styles.drawerLabel,
-                        tab === item.key && styles.drawerLabelSel,
-                      ]}
-                    >
-                      {item.label}
-                    </Text>
-                  </TouchableOpacity>
-                  {i < NAV_ITEMS.length - 1 ? <View style={styles.drawerDivider} /> : null}
-                </React.Fragment>
+                    {item.label}
+                  </Text>
+                  {tab === item.key ? <View style={styles.drawerSelDot} /> : null}
+                </TouchableOpacity>
               ))
             )}
           </Animated.View>
@@ -896,21 +902,34 @@ const styles = StyleSheet.create({
   drawer: {
     width: DRAWER_WIDTH,
     backgroundColor: '#0c0a0a',
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
     paddingBottom: 20,
     borderRightWidth: 1,
     borderRightColor: 'rgba(217,164,65,0.25)',
     overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 8, height: 0 },
+    elevation: 16,
   },
   drawerTitle: {
     color: GOLD,
     fontSize: 22,
     fontWeight: '800',
     letterSpacing: 3,
-    marginBottom: 24,
+    marginBottom: 10,
     fontFamily: 'serif',
     textShadowColor: 'rgba(217,164,65,0.35)',
     textShadowRadius: 8,
+  },
+  drawerTitleRule: {
+    height: 2,
+    width: 42,
+    backgroundColor: ROSE,
+    borderRadius: 1,
+    marginBottom: 22,
+    opacity: 0.9,
   },
   sunDisc: {
     position: 'absolute',
@@ -925,31 +944,46 @@ const styles = StyleSheet.create({
   drawerItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderRadius: 8,
+    paddingVertical: 13,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    marginBottom: 8,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(217,164,65,0.14)',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 2,
   },
   // Hanko-seal treatment for the active tab: a solid rose accent bar on
   // the left (matching the samurai UI convention researched - red/black/
   // gold, a red seal stamp marking what's "chosen") plus a warm
   // background tint, instead of just bolding the text.
   drawerItemSel: {
-    backgroundColor: 'rgba(217,164,65,0.1)',
-    borderLeftWidth: 3,
+    backgroundColor: 'rgba(217,164,65,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(217,164,65,0.55)',
+    borderLeftWidth: 4,
     borderLeftColor: ROSE,
-    paddingLeft: 5,
+    paddingLeft: 9,
     ...glowRose,
+    shadowOpacity: 0.4,
+    elevation: 5,
   },
   drawerIconBadge: {
-    width: 30, height: 30, borderRadius: 15, marginRight: 14,
+    width: 36, height: 36, borderRadius: 11, marginRight: 14,
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: 'rgba(217,164,65,0.08)', borderWidth: 1, borderColor: 'rgba(217,164,65,0.3)',
   },
-  drawerIconBadgeSel: { borderColor: ROSE, backgroundColor: 'rgba(234,90,95,0.15)' },
-  drawerIcon: { fontSize: 15, textAlign: 'center' },
-  drawerLabel: { color: '#c7c0b5', fontSize: 16, fontWeight: '500', letterSpacing: 0.3 },
+  drawerIconBadgeSel: { borderColor: ROSE, backgroundColor: 'rgba(234,90,95,0.18)' },
+  drawerIcon: { fontSize: 17, textAlign: 'center' },
+  drawerLabel: { color: '#c7c0b5', fontSize: 16, fontWeight: '500', letterSpacing: 0.3, flex: 1 },
   drawerLabelSel: { color: GOLD, fontWeight: '700' },
-  drawerDivider: { height: 1, backgroundColor: 'rgba(217,164,65,0.12)', marginVertical: 2 },
+  drawerSelDot: {
+    width: 7, height: 7, borderRadius: 3.5, backgroundColor: ROSE, marginLeft: 6,
+  },
   drawerBackRow: { paddingVertical: 10, marginBottom: 4 },
   drawerBackText: { color: GOLD, fontSize: 14, fontWeight: '700' },
   drawerSubHeader: {
@@ -961,4 +995,5 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 });
+
 

@@ -51,7 +51,7 @@ function toFirestoreValue(val) {
   return { nullValue: null };
 }
 
-function toFirestoreFields(obj) {
+export function toFirestoreFields(obj) {
   const fields = {};
   for (const key in obj) fields[key] = toFirestoreValue(obj[key]);
   return fields;
@@ -78,7 +78,7 @@ function parseFirestoreValue(value) {
   return null;
 }
 
-function parseFirestoreDoc(fields) {
+export function parseFirestoreDoc(fields) {
   const out = {};
   for (const key in fields) out[key] = parseFirestoreValue(fields[key]);
   return out;
@@ -117,4 +117,5 @@ export async function pullFromFirestore(uid, idToken) {
   if (!json.fields) return null;
   return parseFirestoreDoc(json.fields);
 }
+
 

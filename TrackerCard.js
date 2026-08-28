@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, TouchableOpacity, Image, Animated, StyleSheet, Linking } from 'react-native';
+import { View, Text, TouchableOpacity, Image, Animated, StyleSheet, Linking, ScrollView } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { INK, DIM, CARD, BORDER } from './theme';
 
@@ -55,7 +55,7 @@ export default function TrackerCard({
   // gets cut off or padded with black bars. Falls back to the old
   // movie-poster ratio (2:3-ish) until the real size loads, or if it
   // fails to load at all.
-  const FALLBACK_RATIO = 3 / 4.9;
+  const FALLBACK_RATIO = 3 / 5.6;
   const [posterRatio, setPosterRatio] = useState(FALLBACK_RATIO);
   useEffect(() => {
     if (!item.image) {
@@ -172,8 +172,12 @@ export default function TrackerCard({
         >
           <View style={[styles.backAccent, { backgroundColor: color }]} />
 
-          <View style={styles.backContent}>
-            <Text style={styles.backTitle} numberOfLines={2}>
+          <ScrollView
+            style={styles.backContent}
+            contentContainerStyle={styles.backContentInner}
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.backTitle} numberOfLines={1}>
               {item.title}
             </Text>
             <View style={[styles.labelPill, { backgroundColor: color + '2A', borderColor: color + '55' }]}>
@@ -268,6 +272,20 @@ export default function TrackerCard({
                 <Text style={styles.detailText}>
                   {epCurrent > 0 ? `${progressWord} ${epCurrent} so far` : 'New weekly releases'}
                 </Text>
+                <View style={styles.stepperRow}>
+                  <TouchableOpacity
+                    style={[styles.stepBtn, { borderColor: color }]}
+                    onPress={() => onAdjustEpisode(item, -1)}
+                  >
+                    <Text style={[styles.stepBtnText, { color }]}>−1</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.stepBtn, { borderColor: color }]}
+                    onPress={() => onAdjustEpisode(item, 1)}
+                  >
+                    <Text style={[styles.stepBtnText, { color }]}>+1</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
 
@@ -279,7 +297,7 @@ export default function TrackerCard({
                 </Text>
               </View>
             ) : null}
-          </View>
+          </ScrollView>
 
           <View style={styles.backActions}>
             {(isGame || isEpisodic || isManga) && !comingSoon ? (
@@ -308,7 +326,7 @@ export default function TrackerCard({
 const CARD_W = '47%';
 
 const styles = StyleSheet.create({
-  cardSlot: { width: CARD_W, marginBottom: 14, aspectRatio: 3 / 4.9 },
+  cardSlot: { width: CARD_W, marginBottom: 14, aspectRatio: 3 / 5.6 },
   // Video thumbnails are natively wide (16:9-ish) - forcing them into
   // the same tall movie-poster ratio as cover art means most of the
   // card is empty black letterboxing. A more landscape ratio here lets
@@ -355,40 +373,41 @@ const styles = StyleSheet.create({
     backgroundColor: '#161d26', flexDirection: 'column',
   },
   backAccent: { height: 4, width: '100%' },
-  backContent: { flex: 1, padding: 14 },
+  backContent: { flex: 1 },
+  backContentInner: { padding: 12, flexGrow: 1 },
   backTitle: { color: '#fff', fontSize: 15, fontWeight: '800', lineHeight: 19 },
   labelPill: {
     alignSelf: 'flex-start', borderWidth: 1, borderRadius: 20,
-    paddingHorizontal: 9, paddingVertical: 3, marginTop: 8,
+    paddingHorizontal: 9, paddingVertical: 3, marginTop: 6,
   },
   labelPillText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
   divider: {
-    height: StyleSheet.hairlineWidth, backgroundColor: BORDER, marginTop: 12, marginBottom: 12,
+    height: StyleSheet.hairlineWidth, backgroundColor: BORDER, marginTop: 8, marginBottom: 8,
   },
   statusBlock: { alignItems: 'flex-start' },
-  statusIcon: { fontSize: 18, marginBottom: 4 },
+  statusIcon: { fontSize: 18, marginBottom: 2 },
   statusText: { color: INK, fontSize: 14, fontWeight: '800' },
-  detailText: { color: DIM, fontSize: 11.5, marginTop: 3, lineHeight: 16 },
+  detailText: { color: DIM, fontSize: 11.5, marginTop: 2, lineHeight: 15 },
   barTrack: {
     alignSelf: 'stretch',
     height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.1)',
-    overflow: 'hidden', marginTop: 8,
+    overflow: 'hidden', marginTop: 6,
   },
   barFill: { height: '100%', borderRadius: 3 },
   notesBlock: {
-    marginTop: 12, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: BORDER,
+    marginTop: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: BORDER,
   },
   notesLabel: { color: DIM, fontSize: 9.5, fontWeight: '800', letterSpacing: 0.5 },
   notesText: { color: '#c3ccd6', fontSize: 11.5, lineHeight: 16, marginTop: 4 },
-  stepperRow: { flexDirection: 'row', gap: 8, marginTop: 12 },  stepBtn: {
+  stepperRow: { flexDirection: 'row', gap: 8, marginTop: 8 },  stepBtn: {
     borderWidth: 1.3, borderRadius: 8,
-    paddingVertical: 6, paddingHorizontal: 13,
+    paddingVertical: 5, paddingHorizontal: 13,
   },
   stepBtnText: { fontSize: 12, fontWeight: '800' },
   backActions: {
     flexDirection: 'row', flexWrap: 'wrap', gap: 6,
     borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: BORDER,
-    padding: 10,
+    padding: 8,
   },
   actionChip: {
     backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: 8,
@@ -396,3 +415,4 @@ const styles = StyleSheet.create({
   },
   actionChipText: { color: '#8fc4e8', fontSize: 11, fontWeight: '700' },
 });
+
