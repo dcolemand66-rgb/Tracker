@@ -345,9 +345,12 @@ export default function RoadmapsScreen({
     setTaskAddOpen(false);
   }
 
-  function toggleTask(task) {
-    const card = currentCard;
-    const goal = currentGoal;
+  // Real implementation, generic over which card/goal it's acting on -
+  // needed so the game screen (HeroArena) can clear a task directly from
+  // its own Quests/Missions tabs, not just from the card/goal detail view.
+  function toggleTaskIn(cardId, goalId, task) {
+    const card = cards.find((c) => c.id === cardId);
+    const goal = card?.goals?.find((g) => g.id === goalId);
     if (!card || !goal) return;
     const wasGoalComplete = goalTaskProgress(goal).complete;
     const wasCardComplete = cardIsFullyComplete(card);
@@ -378,6 +381,12 @@ export default function RoadmapsScreen({
     }
     applyGlobalXP(delta);
     applyStatXP(statIdsForCard(card), delta);
+  }
+
+  // Thin wrapper for the card/goal detail view below, which already has
+  // currentCardId/currentGoalId in scope.
+  function toggleTask(task) {
+    toggleTaskIn(currentCardId, currentGoalId, task);
   }
 
   function deleteTask(taskId) {
@@ -699,6 +708,7 @@ export default function RoadmapsScreen({
           onOpenGuide={(id) => setOpenGuideId(id)}
           onOpenStats={() => setStatusOpen(true)}
           onManageCards={() => setManageCardsOpen(true)}
+          onToggleTask={toggleTaskIn}
         />
         {renderStatusModal()}
         {renderStatModal()}

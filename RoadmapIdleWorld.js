@@ -54,6 +54,7 @@ export default function RoadmapIdleWorld({
   onOpenGuide,
   onOpenStats,
   onManageCards,
+  onToggleTask,
 }) {
   const insets = useSafeAreaInsets();
   const weapon = WEAPON_TIERS[hero.weaponTier] || WEAPON_TIERS[0];
@@ -126,7 +127,26 @@ export default function RoadmapIdleWorld({
 
   const todayKey = todayDateKey();
   const pendingHabits = (habits || []).filter((h) => !habitDoneOn(h, todayKey));
-  const bossReady = pendingHabits.length === 0;
+
+  // Roadmap tasks, flattened out of cards -> goals -> tasks so the game
+  // can treat "finish a real roadmap task" exactly like "finish a real
+  // habit" - same queue, same fight, same quest-cleared feedback. Each
+  // entry keeps its cardId/goalId so a tap from in-game can round-trip
+  // back to the real toggleTask logic in RoadmapsScreen.
+  function flattenTasks(cardList) {
+    const out = [];
+    (cardList || []).forEach((c) => {
+      (c.goals || []).forEach((g) => {
+        (g.tasks || []).forEach((t) => {
+          out.push({ id: t.id, text: t.text, done: !!t.done, cardId: c.id, goalId: g.id, cardTitle: c.title, goalTitle: g.title || g.text });
+        });
+      });
+    });
+    return out;
+  }
+  const allTasks = flattenTasks(cards);
+  const pendingTasks = allTasks.filter((t) => !t.done);
+  const bossReady = pendingHabits.length === 0 && pendingTasks.length === 0;
 
   const [activeTab, setActiveTab] = useState('combat');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -157,6 +177,29 @@ export default function RoadmapIdleWorld({
     prevDoneRef.current = nowDone;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [habits]);
+
+  // --- real roadmap-task completion -> same auto-fight queue --------------
+  // Mirrors the habit effect above exactly: whenever a task flips from
+  // not-done to done (whether that happened here in-game via onToggleTask,
+  // or back in RoadmapsScreen's card/goal view), it queues a real fight.
+  // Tasks and habits share one queue, so they interleave naturally.
+  const prevTaskDoneRef = useRef(new Set());
+  useEffect(() => {
+    const nowDone = new Set(allTasks.filter((t) => t.done).map((t) => t.id));
+    const newlyDone = allTasks.filter((t) => nowDone.has(t.id) && !prevTaskDoneRef.current.has(t.id));
+    if (newlyDone.length) {
+      const entries = newlyDone.map((t) => ({ id: t.id, text: t.text }));
+      setQueue((q) => [...q, ...entries]);
+      setReadyQuests((prev) => [...prev, ...entries]);
+      entries.forEach((e) => {
+        setTimeout(() => {
+          setReadyQuests((prev) => prev.filter((q) => q.id !== e.id));
+        }, AUTO_CLEAR_MS);
+      });
+    }
+    prevTaskDoneRef.current = nowDone;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards]);
 
   // --- boss-defeated trigger (real: fires when real level increases) ------
   const prevLevelRef = useRef(level);
@@ -319,7 +362,7 @@ export default function RoadmapIdleWorld({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, hero.energy, realm.tier]);
 
-  const displayTarget = activeFight || pendingHabits[0] || null;
+  const displayTarget = activeFight || pendingHabits[0] || pendingTasks[0] || null;
 
   // Minion enemy shown during regular (non-boss) combat - picked
   // deterministically from the target's own id so the same habit always
@@ -511,11 +554,11 @@ export default function RoadmapIdleWorld({
                 <Text style={styles.h2}>
                   {activeFight ? `Clearing: ${activeFight.text}` : displayTarget ? `Next: ${displayTarget.text}` : 'All entropy cleared'}
                 </Text>
-                <Row icon="📜" label="Quests remaining today" value={String(pendingHabits.length)} />
+                <Row icon="📜" label="Quests remaining today" value={String(pendingHabits.length + pendingTasks.length)} />
                 {queue.length > 0 && hero.energy < cost ? (
                   <Text style={styles.hint}>Waiting on Ki - complete a task to earn more.</Text>
                 ) : (
-                  <Text style={styles.hint}>Complete a habit in real life - it auto-resolves here.</Text>
+                  <Text style={styles.hint}>Complete a habit or roadmap task in real life - it auto-resolves here.</Text>
                 )}
                 {displayTarget ? (
                   <>
@@ -570,15 +613,28 @@ export default function RoadmapIdleWorld({
         {activeTab === 'quests' ? (
           <ScrollView contentContainerStyle={styles.panel}>
             <Text style={styles.h1}>Today's Quests</Text>
-            {pendingHabits.length === 0 && readyQuests.length === 0 ? (
+            {pendingHabits.length === 0 && pendingTasks.length === 0 && readyQuests.length === 0 ? (
               <Text style={styles.hint}>All quests cleared for today.</Text>
             ) : (
               <>
                 {pendingHabits.map((h) => (
-                  <Row key={h.id} label={h.text} value="pending" />
+                  <Row key={h.id} icon="🔁" label={h.text} value="pending" />
+                ))}
+                {pendingTasks.map((t) => (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={styles.row}
+                    onPress={() => onToggleTask && onToggleTask(t.cardId, t.goalId, t)}
+                  >
+                    <Text style={styles.rowLabel}>
+                      🗺️  {t.text}
+                      <Text style={styles.hint}>  · {t.cardTitle}</Text>
+                    </Text>
+                    <Text style={[styles.rowValue, styles.valueGold]}>tap to clear</Text>
+                  </TouchableOpacity>
                 ))}
                 {readyQuests.map((q) => (
-                  <Row key={q.id} label={q.text} value="cleared" valueStyle={styles.valueGood} />
+                  <Row key={q.id} icon="✅" label={q.text} value="cleared" valueStyle={styles.valueGood} />
                 ))}
               </>
             )}
@@ -609,6 +665,23 @@ export default function RoadmapIdleWorld({
                 return <Row key={c.id} label={c.title} value={`${done}/${goals.length} goals`} />;
               })
             )}
+            {pendingTasks.length > 0 ? (
+              <>
+                <Text style={[styles.hint, { marginTop: 2, marginBottom: 6 }]}>
+                  Tap a task to clear it and send it into battle:
+                </Text>
+                {pendingTasks.map((t) => (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={styles.row}
+                    onPress={() => onToggleTask && onToggleTask(t.cardId, t.goalId, t)}
+                  >
+                    <Text style={styles.rowLabel}>🗺️  {t.text}</Text>
+                    <Text style={styles.rowValue}>{t.cardTitle}</Text>
+                  </TouchableOpacity>
+                ))}
+              </>
+            ) : null}
             {(guides || []).length > 0 ? (
               <>
                 <View style={styles.divider} />
