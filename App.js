@@ -104,6 +104,11 @@ function MainApp() {
   const [googleUser, setGoogleUser] = useState(null);
   const [customColors, setCustomColors] = useState([]);
   const [trips, setTrips] = useState([]);
+  // Side Quests - a lightweight, separate passion-tracking list on the
+  // Calendar screen. Deliberately not tied to Roadmaps: those are
+  // structured goal cards with tasks/lessons, this is meant to be a much
+  // lower-friction "things I'm into" list you can jot down and check off.
+  const [sideQuests, setSideQuests] = useState([]);
   const [farmingProgress, setFarmingProgress] = useState({});
   const [pendingHabitId, setPendingHabitId] = useState(null);
   const [saveError, setSaveError] = useState(null);
@@ -219,6 +224,7 @@ function MainApp() {
       googleUser,
       customColors,
       trips,
+      sideQuests,
       farmingProgress,
       calendarViewMode,
       meditationSettings,
@@ -256,6 +262,7 @@ function MainApp() {
     setGoogleUser(p.googleUser || null);
     setCustomColors(p.customColors || []);
     setTrips(p.trips || []);
+    setSideQuests(p.sideQuests || []);
     setFarmingProgress(p.farmingProgress || {});
     setCalendarViewMode(p.calendarViewMode || 'agenda');
     setMeditationSettings(p.meditationSettings || { breathCount: 5, tempoId: 'medium', totalRounds: 1, soundOn: true });
@@ -450,6 +457,7 @@ function MainApp() {
       googleUser,
       customColors,
       trips,
+      sideQuests,
       farmingProgress,
       calendarViewMode,
       meditationSettings,
@@ -620,6 +628,8 @@ function MainApp() {
               setPendingHabitId(id);
               setTab('habits');
             }}
+            sideQuests={sideQuests}
+            setSideQuests={setSideQuests}
           />
         )}
         {tab === 'roadmaps' && (

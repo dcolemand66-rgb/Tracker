@@ -249,7 +249,7 @@ export default function TrackerCard({
                     style={[styles.barFill, { width: `${epPct}%` }]}
                   />
                 </View>
-                <Text style={styles.detailText}>{epPct}% watched</Text>
+                <Text style={styles.detailText}>{epPct}% {isManga ? 'read' : 'watched'}</Text>
                 <View style={styles.stepperRow}>
                   <TouchableOpacity
                     style={[styles.stepBtn, { borderColor: color }]}

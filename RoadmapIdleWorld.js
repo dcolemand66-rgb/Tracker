@@ -2,12 +2,16 @@ import React, { useRef, useEffect, useState } from 'react';
 import { View, Text, Image, ImageBackground, Animated, Easing, TouchableOpacity, ScrollView, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { xpForLevel } from './leveling';
-import { habitDoneOn, todayDateKey } from './habitUtils';
+import { habitDoneOn, todayDateKey, habitStreak } from './habitUtils';
 import { WEAPON_TIERS, ARMOR_TIERS, minionFightCost, MINION_TYPES, MAX_ENERGY, ABILITIES } from './heroUtils';
 import { RONIN_IDLE_FRAMES, RONIN_ATTACK_FRAMES } from './roninSprites';
 import { ONI_IDLE_FRAMES, ONI_ATTACK_FRAMES } from './oniSprites';
 import { PROVINCE_BACKGROUND } from './provinceBackgrounds';
 import { DEMON_REALM_BACKGROUND } from './demonRealmBackground';
+import {
+  GOLD, GOLD_LIGHT, GOLD_DEEP, BLUE, CARD, INK, DIM, ROSE, JADE, JADE_LIGHT,
+  BORDER, BORDER_STRONG, INPUT_BG, glowGold, glowRose, glowJade,
+} from './theme';
 
 // ============================================================================
 // Emberforge - text/math-only build. Per the plan: nail the actual game
@@ -127,6 +131,7 @@ export default function RoadmapIdleWorld({
 
   const todayKey = todayDateKey();
   const pendingHabits = (habits || []).filter((h) => !habitDoneOn(h, todayKey));
+<<<<<<< HEAD
 
   // Roadmap tasks, flattened out of cards -> goals -> tasks so the game
   // can treat "finish a real roadmap task" exactly like "finish a real
@@ -147,6 +152,13 @@ export default function RoadmapIdleWorld({
   const allTasks = flattenTasks(cards);
   const pendingTasks = allTasks.filter((t) => !t.done);
   const bossReady = pendingHabits.length === 0 && pendingTasks.length === 0;
+=======
+  const bossReady = pendingHabits.length === 0;
+  // Longest current real habit streak - shown as a stat only, never fed
+  // back into rewards/xp math itself (that stays exactly where it already
+  // lives, in habitUtils/RoadmapsScreen). Purely a "how hot am I" readout.
+  const bestStreak = (habits || []).reduce((max, h) => Math.max(max, habitStreak(h)), 0);
+>>>>>>> d34e328 (Save current state)
 
   const [activeTab, setActiveTab] = useState('combat');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -165,7 +177,7 @@ export default function RoadmapIdleWorld({
     const nowDone = new Set((habits || []).filter((h) => habitDoneOn(h, todayKey)).map((h) => h.id));
     const newlyDone = (habits || []).filter((h) => nowDone.has(h.id) && !prevDoneRef.current.has(h.id));
     if (newlyDone.length) {
-      const entries = newlyDone.map((h) => ({ id: h.id, text: h.text }));
+      const entries = newlyDone.map((h) => ({ id: h.id, text: h.text, kind: 'habit' }));
       setQueue((q) => [...q, ...entries]);
       setReadyQuests((prev) => [...prev, ...entries]);
       entries.forEach((e) => {
@@ -178,6 +190,7 @@ export default function RoadmapIdleWorld({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [habits]);
 
+<<<<<<< HEAD
   // --- real roadmap-task completion -> same auto-fight queue --------------
   // Mirrors the habit effect above exactly: whenever a task flips from
   // not-done to done (whether that happened here in-game via onToggleTask,
@@ -189,6 +202,40 @@ export default function RoadmapIdleWorld({
     const newlyDone = allTasks.filter((t) => nowDone.has(t.id) && !prevTaskDoneRef.current.has(t.id));
     if (newlyDone.length) {
       const entries = newlyDone.map((t) => ({ id: t.id, text: t.text }));
+=======
+  // --- real roadmap-task completion -> auto-fight queue --------------------
+  // Same treatment as habits above: finishing a task on a Roadmap card
+  // (RoadmapsScreen -> toggleTask) is a real, one-time event that should
+  // land a real hit in the game, not just move numbers behind the scenes.
+  // Tasks aren't "daily" like habits (no pendingToday concept - a task
+  // is just done/not-done forever), so this only ever reacts to the
+  // done flag flipping true, and never contributes to the "quests
+  // remaining today" count above, which stays habit-only.
+  function flattenRoadmapTasks(cardList) {
+    const out = [];
+    (cardList || []).forEach((c) => {
+      (c.goals || []).forEach((g) => {
+        (g.tasks || []).forEach((t) => {
+          out.push({ id: t.id, text: t.text, done: !!t.done, cardTitle: c.title, goalText: g.text });
+        });
+      });
+    });
+    return out;
+  }
+  const prevTaskDoneRef = useRef(
+    new Set(flattenRoadmapTasks(cards).filter((t) => t.done).map((t) => t.id))
+  );
+  useEffect(() => {
+    const flat = flattenRoadmapTasks(cards);
+    const nowDone = new Set(flat.filter((t) => t.done).map((t) => t.id));
+    const newlyDone = flat.filter((t) => nowDone.has(t.id) && !prevTaskDoneRef.current.has(t.id));
+    if (newlyDone.length) {
+      const entries = newlyDone.map((t) => ({
+        id: t.id,
+        text: `${t.goalText}: ${t.text}`,
+        kind: 'task',
+      }));
+>>>>>>> d34e328 (Save current state)
       setQueue((q) => [...q, ...entries]);
       setReadyQuests((prev) => [...prev, ...entries]);
       entries.forEach((e) => {
@@ -412,18 +459,39 @@ export default function RoadmapIdleWorld({
   // not a way to skip past real tasks. Same weapon-scaled damage pool
   // either way, so gear matters here too.
   const ATTACK_HONOR_COST = 15;
-  const attackDamage = Math.round(weapon.atk * 3);
+  const baseAttackDamage = Math.round(weapon.atk * 3);
+  // Crit chance scales gently with weapon tier - another reason gear
+  // upgrades (bought with real Koku, earned from real tasks) feel better,
+  // on top of the flat damage bump they already give.
+  const critChance = Math.min(0.35, 0.08 + hero.weaponTier * 0.04);
   const canManualAttack =
     embers >= ATTACK_HONOR_COST && (bossReady ? !awaitingFinishingBlow : !!displayTarget && minionHP > 0);
+
+  // --- floating damage numbers - pure juice, no economy impact ------------
+  const [popups, setPopups] = useState([]);
+  const popupIdRef = useRef(0);
+  function spawnPopup(value, crit) {
+    const id = popupIdRef.current++;
+    const anim = new Animated.Value(0);
+    setPopups((prev) => [...prev, { id, value, crit, anim }]);
+    Animated.timing(anim, { toValue: 1, duration: 700, easing: Easing.out(Easing.quad), useNativeDriver: true }).start(
+      () => setPopups((prev) => prev.filter((p) => p.id !== id))
+    );
+  }
+
   function manualAttack() {
     if (!canManualAttack) return;
+    const isCrit = Math.random() < critChance;
+    const dealt = isCrit ? baseAttackDamage * 2 : baseAttackDamage;
     setEmbers((e) => Math.round((e - ATTACK_HONOR_COST) * 10) / 10);
     if (bossReady) {
-      setHero((prev) => ({ ...prev, bossDamageDealt: (prev.bossDamageDealt || 0) + attackDamage }));
+      setHero((prev) => ({ ...prev, bossDamageDealt: (prev.bossDamageDealt || 0) + dealt }));
     } else {
-      setMinionHP((hp) => Math.max(0, hp - attackDamage));
+      setMinionHP((hp) => Math.max(0, hp - dealt));
     }
     setRoninBossAttacking(true);
+    spawnPopup(dealt, isCrit);
+    playAbilityFlash();
   }
 
   // --- Abilities: one-time Koku unlock, then Honor-cost + cooldown use ---
@@ -523,29 +591,57 @@ export default function RoadmapIdleWorld({
                   <Image source={{ uri: roninSprite }} style={styles.sprite} resizeMode="contain" />
                 </Animated.View>
                 {bossReady ? (
-                  <View style={styles.spriteWrap}>
+                  <TouchableOpacity
+                    activeOpacity={canManualAttack ? 0.7 : 1}
+                    onPress={manualAttack}
+                    style={styles.spriteWrap}
+                  >
                     <Animated.View style={{ transform: [{ translateX: oniLungeX }] }}>
                       <Image source={{ uri: oniSprite }} style={styles.oniSprite} resizeMode="contain" />
                     </Animated.View>
                     <View style={styles.oniHealthTrack}>
                       <View style={[styles.oniHealthFill, { width: `${healthPct}%` }]} />
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 ) : minionSprite ? (
-                  <View style={styles.spriteWrap}>
+                  <TouchableOpacity
+                    activeOpacity={canManualAttack ? 0.7 : 1}
+                    onPress={manualAttack}
+                    style={styles.spriteWrap}
+                  >
                     <Image source={{ uri: minionSprite }} style={styles.minionSprite} resizeMode="contain" />
                     <View style={styles.minionHealthTrack}>
                       <View style={[styles.minionHealthFill, { width: `${minionHPPct}%` }]} />
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 ) : null}
+                {popups.map((p) => (
+                  <Animated.Text
+                    key={p.id}
+                    pointerEvents="none"
+                    style={[
+                      styles.dmgPopup,
+                      p.crit ? styles.dmgPopupCrit : null,
+                      {
+                        opacity: p.anim.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 1, 0] }),
+                        transform: [
+                          { translateY: p.anim.interpolate({ inputRange: [0, 1], outputRange: [0, -60] }) },
+                        ],
+                      },
+                    ]}
+                  >
+                    {p.crit ? `CRIT! -${p.value}` : `-${p.value}`}
+                  </Animated.Text>
+                ))}
               </View>
             </ImageBackground>
 
-            <Row icon="🏯" label="Province" value={`${realm.name} (${realm.tier}x Koku/kill)`} />
-            <Row icon="⚔️" label="Weapon / Armor" value={`${weapon.name} / ${armor.name}`} />
-            <Row icon="✨" label="Honor" value={`${embers} (+${emberRate}/sec)`} valueStyle={styles.valueHonor} />
-            <Row icon="💀" label="Foes Slain" value={String(sessionKills)} valueStyle={styles.valueDanger} />
+            <View style={styles.statGrid}>
+              <StatChip icon="🏯" label="Province" value={realm.name} sub={`${realm.tier}x Koku`} />
+              <StatChip icon="⚔️" label="Loadout" value={weapon.name} sub={armor.name} />
+              <StatChip icon="✨" label="Honor" value={`${embers}`} sub={`+${emberRate}/sec`} tint={JADE_LIGHT} />
+              <StatChip icon="🔥" label="Streak" value={`${bestStreak}d`} sub={`${sessionKills} slain`} tint={ROSE} />
+            </View>
 
             <View style={styles.divider} />
 
@@ -558,7 +654,11 @@ export default function RoadmapIdleWorld({
                 {queue.length > 0 && hero.energy < cost ? (
                   <Text style={styles.hint}>Waiting on Ki - complete a task to earn more.</Text>
                 ) : (
+<<<<<<< HEAD
                   <Text style={styles.hint}>Complete a habit or roadmap task in real life - it auto-resolves here.</Text>
+=======
+                  <Text style={styles.hint}>Complete a habit or a Roadmap task in real life - it auto-resolves here.</Text>
+>>>>>>> d34e328 (Save current state)
                 )}
                 {displayTarget ? (
                   <>
@@ -568,7 +668,7 @@ export default function RoadmapIdleWorld({
                       onPress={manualAttack}
                     >
                       <Text style={[styles.attackBtnText, !canManualAttack && styles.attackBtnTextDisabled]}>
-                        ⚔️ Attack ({ATTACK_HONOR_COST} Honor → {attackDamage} dmg)
+                        ⚔️ Attack ({ATTACK_HONOR_COST} Honor → {baseAttackDamage} dmg · {Math.round(critChance * 100)}% crit)
                       </Text>
                     </TouchableOpacity>
                     {embers < ATTACK_HONOR_COST ? (
@@ -597,7 +697,7 @@ export default function RoadmapIdleWorld({
                       onPress={manualAttack}
                     >
                       <Text style={[styles.attackBtnText, !canManualAttack && styles.attackBtnTextDisabled]}>
-                        ⚔️ Attack ({ATTACK_HONOR_COST} Honor → {attackDamage} dmg)
+                        ⚔️ Attack ({ATTACK_HONOR_COST} Honor → {baseAttackDamage} dmg · {Math.round(critChance * 100)}% crit)
                       </Text>
                     </TouchableOpacity>
                     {embers < ATTACK_HONOR_COST ? (
@@ -618,6 +718,7 @@ export default function RoadmapIdleWorld({
             ) : (
               <>
                 {pendingHabits.map((h) => (
+<<<<<<< HEAD
                   <Row key={h.id} icon="🔁" label={h.text} value="pending" />
                 ))}
                 {pendingTasks.map((t) => (
@@ -635,6 +736,18 @@ export default function RoadmapIdleWorld({
                 ))}
                 {readyQuests.map((q) => (
                   <Row key={q.id} icon="✅" label={q.text} value="cleared" valueStyle={styles.valueGood} />
+=======
+                  <Row key={h.id} icon="📜" label={h.text} value="pending" />
+                ))}
+                {readyQuests.map((q) => (
+                  <Row
+                    key={q.id}
+                    icon={q.kind === 'task' ? '🗺️' : '📜'}
+                    label={q.text}
+                    value="cleared"
+                    valueStyle={styles.valueGood}
+                  />
+>>>>>>> d34e328 (Save current state)
                 ))}
               </>
             )}
@@ -917,13 +1030,18 @@ export default function RoadmapIdleWorld({
 
       <View style={[styles.tabBar, { paddingBottom: insets.bottom }]}>
         {[
-          { key: 'combat', label: 'Combat' },
-          { key: 'quests', label: 'Quests' },
-          { key: 'missions', label: 'Missions' },
-          { key: 'zones', label: 'Provinces' },
-          { key: 'storage', label: 'Storage' },
+          { key: 'combat', label: 'Combat', icon: '⚔️' },
+          { key: 'quests', label: 'Quests', icon: '📜' },
+          { key: 'missions', label: 'Missions', icon: '🗺️' },
+          { key: 'zones', label: 'Provinces', icon: '🏯' },
+          { key: 'storage', label: 'Storage', icon: '🎒' },
         ].map((t) => (
-          <TouchableOpacity key={t.key} style={styles.tabBtn} onPress={() => setActiveTab(t.key)}>
+          <TouchableOpacity
+            key={t.key}
+            style={[styles.tabBtn, activeTab === t.key && styles.tabBtnActive]}
+            onPress={() => setActiveTab(t.key)}
+          >
+            <Text style={styles.tabBtnIcon}>{t.icon}</Text>
             <Text style={[styles.tabBtnText, activeTab === t.key && styles.tabBtnTextActive]}>{t.label}</Text>
           </TouchableOpacity>
         ))}
@@ -935,121 +1053,175 @@ export default function RoadmapIdleWorld({
 function Row({ icon, label, value, valueStyle }) {
   return (
     <View style={styles.row}>
-      <Text style={styles.rowLabel}>
-        {icon ? `${icon}  ` : ''}
-        {label}
-      </Text>
+      {icon ? (
+        <View style={styles.rowIconBadge}>
+          <Text style={styles.rowIconText}>{icon}</Text>
+        </View>
+      ) : null}
+      <Text style={styles.rowLabel}>{label}</Text>
       <Text style={[styles.rowValue, valueStyle]}>{value}</Text>
     </View>
   );
 }
 
+// A small HUD-style stat tile used in a grid at the top of the Combat
+// tab, in place of what used to be four plain text rows - same real
+// data, laid out to actually look like a game stat panel.
+function StatChip({ icon, label, value, sub, tint }) {
+  return (
+    <View style={styles.statChip}>
+      <Text style={styles.statChipIcon}>{icon}</Text>
+      <Text style={styles.statChipLabel}>{label}</Text>
+      <Text style={[styles.statChipValue, tint ? { color: tint } : null]} numberOfLines={1}>
+        {value}
+      </Text>
+      {sub ? <Text style={styles.statChipSub} numberOfLines={1}>{sub}</Text> : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: '#000' },
+  wrap: { flex: 1, backgroundColor: BLUE },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingBottom: 10,
+    backgroundColor: CARD,
     borderBottomWidth: 1,
-    borderBottomColor: '#333',
+    borderBottomColor: BORDER_STRONG,
   },
-  iconBtn: { paddingVertical: 6, paddingHorizontal: 10 },
-  iconBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-  topBarText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  iconBtn: {
+    paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8,
+    borderWidth: 1, borderColor: BORDER, backgroundColor: 'rgba(217,164,65,0.08)',
+  },
+  iconBtnText: { color: GOLD_LIGHT, fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
+  topBarText: { color: GOLD_LIGHT, fontSize: 13, fontWeight: '800', letterSpacing: 0.5, ...glowGold, textShadowColor: 'rgba(217,164,65,0.5)', textShadowRadius: 6 },
   content: { flex: 1 },
   panel: { padding: 16 },
   h1: {
-    color: '#ffd54a', fontSize: 22, fontWeight: '800', marginBottom: 12,
-    fontFamily: 'serif', letterSpacing: 1.5, textShadowColor: 'rgba(255,154,60,0.4)', textShadowRadius: 8,
+    color: GOLD_LIGHT, fontSize: 22, fontWeight: '800', marginBottom: 12,
+    fontFamily: 'serif', letterSpacing: 1.5, textShadowColor: 'rgba(240,195,104,0.45)', textShadowRadius: 10,
   },
   arenaBox: {
     height: 220,
-    borderRadius: 10,
+    borderRadius: 14,
     overflow: 'hidden',
     marginBottom: 14,
     justifyContent: 'flex-end',
+    borderWidth: 2,
+    borderColor: BORDER_STRONG,
+    ...glowGold,
   },
-  arenaBoxImage: { borderRadius: 10 },
+  arenaBoxImage: { borderRadius: 12 },
   combatScrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.25)' },
   abilityFlash: {
-    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#ffd54a',
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: GOLD_LIGHT,
   },
   arenaRow: { flex: 1, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-evenly' },
   spriteWrap: { alignItems: 'center', paddingBottom: 16 },
   sprite: { width: 96, height: 96 },
   oniSprite: { width: 100, height: 120 },
   minionSprite: { width: 60, height: 60 },
+  dmgPopup: {
+    position: 'absolute', top: 40, left: 0, right: 0, textAlign: 'center', color: GOLD_LIGHT,
+    fontSize: 18, fontWeight: '800', textShadowColor: 'rgba(0,0,0,0.8)', textShadowRadius: 4,
+  },
+  dmgPopupCrit: { color: ROSE, fontSize: 22 },
   shopRow: {
-    flexDirection: 'row', alignItems: 'center', paddingVertical: 10,
-    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.06)',
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 10,
+    marginBottom: 8, borderRadius: 10, backgroundColor: CARD,
+    borderWidth: 1, borderColor: BORDER,
   },
   shopIcon: {
     width: 36, height: 36, borderRadius: 8, marginRight: 12,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: 'rgba(217,164,65,0.08)',
   },
   shopBtn: {
-    backgroundColor: '#ffd54a', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8,
+    backgroundColor: GOLD, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8,
   },
-  shopBtnEquipped: { backgroundColor: 'rgba(255,255,255,0.08)' },
+  shopBtnEquipped: { backgroundColor: 'rgba(122,154,90,0.25)' },
   shopBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.05)' },
   shopBtnText: { color: '#1c1206', fontSize: 12, fontWeight: '700' },
-  shopBtnTextLight: { color: '#c7c0b5' },
+  shopBtnTextLight: { color: DIM },
   oniHealthTrack: {
-    width: 100, height: 10, borderRadius: 5, backgroundColor: 'rgba(0,0,0,0.5)',
-    overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,90,90,0.6)', marginTop: 6,
+    width: 110, height: 12, borderRadius: 6, backgroundColor: 'rgba(0,0,0,0.5)',
+    overflow: 'hidden', borderWidth: 1.5, borderColor: ROSE, marginTop: 6,
   },
-  oniHealthFill: { height: '100%', backgroundColor: '#e33', borderRadius: 5 },
+  oniHealthFill: { height: '100%', backgroundColor: ROSE, borderRadius: 6 },
   minionHealthTrack: {
-    width: 60, height: 7, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.5)',
-    overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(140,220,140,0.6)', marginTop: 5,
+    width: 64, height: 8, borderRadius: 4, backgroundColor: 'rgba(0,0,0,0.5)',
+    overflow: 'hidden', borderWidth: 1, borderColor: JADE_LIGHT, marginTop: 5,
   },
-  minionHealthFill: { height: '100%', backgroundColor: '#5cb85c', borderRadius: 4 },
+  minionHealthFill: { height: '100%', backgroundColor: JADE, borderRadius: 4 },
   attackBtn: {
-    backgroundColor: '#ffd54a', borderRadius: 10, paddingVertical: 12, alignItems: 'center', marginTop: 10,
+    backgroundColor: GOLD, borderRadius: 12, paddingVertical: 13, alignItems: 'center', marginTop: 10,
+    borderWidth: 1, borderColor: GOLD_LIGHT, ...glowGold,
   },
-  attackBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.08)' },
-  attackBtnText: { color: '#1c1206', fontSize: 14, fontWeight: '700' },
-  attackBtnTextDisabled: { color: '#c7c0b5' },
+  attackBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.06)', borderColor: BORDER, shadowOpacity: 0, elevation: 0 },
+  attackBtnText: { color: '#1c1206', fontSize: 14, fontWeight: '800', letterSpacing: 0.4 },
+  attackBtnTextDisabled: { color: DIM },
   h2: {
-    color: '#ffd54a', fontSize: 16, fontWeight: '800', marginTop: 6, marginBottom: 10,
+    color: GOLD_LIGHT, fontSize: 16, fontWeight: '800', marginTop: 6, marginBottom: 10,
     fontFamily: 'serif', letterSpacing: 0.8,
   },
-  hint: { color: '#999', fontSize: 12, marginTop: 8, fontStyle: 'italic' },
-  divider: { height: 1, backgroundColor: 'rgba(255,154,60,0.2)', marginVertical: 14 },
+  hint: { color: DIM, fontSize: 12, marginTop: 8, fontStyle: 'italic' },
+  divider: { height: 1, backgroundColor: BORDER, marginVertical: 14 },
+  statGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  statChip: {
+    width: '48.5%', backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: BORDER,
+    paddingVertical: 10, paddingHorizontal: 12, marginBottom: 10,
+  },
+  statChipIcon: { fontSize: 16, marginBottom: 2 },
+  statChipLabel: { color: DIM, fontSize: 10, letterSpacing: 0.5, textTransform: 'uppercase' },
+  statChipValue: { color: INK, fontSize: 15, fontWeight: '800', marginTop: 2 },
+  statChipSub: { color: DIM, fontSize: 11, marginTop: 1 },
   row: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 9,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 6,
+    borderRadius: 10,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
   },
-  rowLabel: { color: '#b8bfcc', fontSize: 13, flex: 1, letterSpacing: 0.2 },
-  rowValue: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  valueGood: { color: '#7fdc7f' },
-  valueGold: { color: '#ffd54a' },
+  rowIconBadge: {
+    width: 26, height: 26, borderRadius: 13, backgroundColor: 'rgba(217,164,65,0.1)',
+    alignItems: 'center', justifyContent: 'center', marginRight: 10,
+  },
+  rowIconText: { fontSize: 13 },
+  rowLabel: { color: INK, fontSize: 13, flex: 1, letterSpacing: 0.2 },
+  rowValue: { color: GOLD_LIGHT, fontSize: 14, fontWeight: '700' },
+  valueGood: { color: JADE_LIGHT },
+  valueGold: { color: GOLD_LIGHT },
   valueHonor: { color: '#c9a6ff' },
-  valueDanger: { color: '#ff6b6b' },
-  dim: { color: '#666' },
+  valueDanger: { color: ROSE },
+  dim: { color: DIM },
   drawerBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 40 },
   drawer: {
     position: 'absolute', top: 0, bottom: 0, left: 0, width: 240,
-    backgroundColor: '#0a0a0a', borderRightWidth: 1, borderRightColor: '#333',
+    backgroundColor: BLUE, borderRightWidth: 1, borderRightColor: BORDER_STRONG,
     padding: 16, zIndex: 41,
   },
   drawerArt: {
     width: '100%', height: 160, borderRadius: 10, marginBottom: 6,
-    borderWidth: 1, borderColor: 'rgba(217,164,65,0.3)',
+    borderWidth: 1, borderColor: BORDER_STRONG,
   },
   drawerArtCredit: {
-    color: '#7a7268', fontSize: 9, marginBottom: 14, textAlign: 'center',
+    color: DIM, fontSize: 9, marginBottom: 14, textAlign: 'center',
   },
   tabBar: {
     flexDirection: 'row',
+    backgroundColor: CARD,
     borderTopWidth: 1,
-    borderTopColor: '#333',
+    borderTopColor: BORDER_STRONG,
   },
-  tabBtn: { flex: 1, alignItems: 'center', paddingVertical: 10 },
-  tabBtnText: { color: '#888', fontSize: 12, fontWeight: '600' },
-  tabBtnTextActive: { color: '#fff', fontWeight: '800' },
+  tabBtn: { flex: 1, alignItems: 'center', paddingVertical: 10, borderTopWidth: 2, borderTopColor: 'transparent' },
+  tabBtnActive: { borderTopColor: GOLD, backgroundColor: 'rgba(217,164,65,0.06)' },
+  tabBtnIcon: { fontSize: 14, marginBottom: 2 },
+  tabBtnText: { color: DIM, fontSize: 11, fontWeight: '600' },
+  tabBtnTextActive: { color: GOLD_LIGHT, fontWeight: '800' },
 });

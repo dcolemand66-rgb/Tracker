@@ -410,7 +410,17 @@ export default function SavingsScreen({
             </TouchableOpacity>
           </View>
           {goals.length === 0 ? (
-            <Text style={shared.tagline}>Nothing you're saving toward yet.</Text>
+            <View style={styles.goalsEmpty}>
+              <Text style={styles.goalsEmptyIcon}>🎯</Text>
+              <Text style={styles.goalsEmptyTitle}>Nothing you're saving toward yet</Text>
+              <Text style={styles.goalsEmptyBody}>
+                Add a goal - a trip, an emergency fund, a big purchase - set a
+                monthly amount, and this screen tracks the countdown for you.
+              </Text>
+              <TouchableOpacity style={styles.goalsEmptyBtn} onPress={openGoalAdd}>
+                <Text style={styles.goalsEmptyBtnText}>+ Add a Goal</Text>
+              </TouchableOpacity>
+            </View>
           ) : (
             goals.map((g) => {
               const pct = g.target ? Math.min(100, Math.round((g.saved / g.target) * 100)) : 0;
@@ -685,6 +695,18 @@ export default function SavingsScreen({
 }
 
 const styles = StyleSheet.create({
+  goalsEmpty: {
+    alignItems: 'center', paddingVertical: 18, paddingHorizontal: 12,
+  },
+  goalsEmptyIcon: { fontSize: 26, marginBottom: 6 },
+  goalsEmptyTitle: { color: INK, fontSize: 14, fontWeight: '700', textAlign: 'center' },
+  goalsEmptyBody: {
+    color: DIM, fontSize: 12.5, textAlign: 'center', marginTop: 6, lineHeight: 17, maxWidth: 280,
+  },
+  goalsEmptyBtn: {
+    backgroundColor: GOLD, borderRadius: 10, paddingHorizontal: 18, paddingVertical: 10, marginTop: 14,
+  },
+  goalsEmptyBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   heroCard: {
     borderRadius: 20,
     padding: 24,

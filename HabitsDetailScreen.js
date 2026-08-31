@@ -359,8 +359,13 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
   // Photos come from your own copies of the books — the app supplies the
   // slot, you supply the reference shot.
   async function attachTechniquePhoto(habit, techId) {
-    const uri = await pickCompressedImage();
-    if (!uri) return;
+    const result = await pickCompressedImage();
+    if (result.error === 'permission') {
+      Alert.alert('Photo access needed', 'Allow photo library access to add a photo.');
+      return;
+    }
+    if (result.canceled || !result.uri) return;
+    const uri = result.uri;
     setHabits((prev) =>
       prev.map((h) =>
         h.id === habit.id

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Modal,
   StyleSheet,
+  Alert,
 } from 'react-native';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 import { pickCompressedImage } from './imagePicker';
@@ -46,8 +47,13 @@ export default function RoadmapCourseView({ guide, progress, setProgress, onBack
   }
 
   async function attachPhotoTo(phaseId) {
-    const uri = await pickCompressedImage();
-    if (!uri) return;
+    const result = await pickCompressedImage();
+    if (result.error === 'permission') {
+      Alert.alert('Photo access needed', 'Allow photo library access to add a photo.');
+      return;
+    }
+    if (result.canceled || !result.uri) return;
+    const uri = result.uri;
     setProgress((prev) => {
       const cur = (prev || {})[phaseId] || {};
       return { ...(prev || {}), [phaseId]: { ...cur, photo: uri } };

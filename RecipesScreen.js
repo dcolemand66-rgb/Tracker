@@ -187,7 +187,12 @@ export default function RecipesScreen({
   setPreservedItems,
 }) {
   const [subTab, setSubTab] = useState('recipes');
-
+  // Recipe list search + readiness filter - as the list grows past a
+  // handful of recipes it stops being possible to eyeball which ones you
+  // can actually cook right now, so this reuses the same ingredientHave()
+  // check the "missing" count on each row already does.
+  const [recipeSearch, setRecipeSearch] = useState('');
+  const [recipeFilter, setRecipeFilter] = useState('all'); // 'all' | 'ready' | 'missing'
   // One-time cleanup for recipes saved before the HTML-sanitization fix
   // in recipeImport.js - that fix only runs on new imports, so anything
   // already saved kept its raw &#176;/<span>/<!--StartFragment--> mess
@@ -795,39 +800,93 @@ export default function RecipesScreen({
               </Text>
             </View>
           ) : (
-            [...recipes]
-              .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))
-              .map((r) => {
-                const real = (r.ingredients || []).filter((i) => !i.isHeader);
-                const missing = real.filter((i) => !ingredientHave(i, inventory)).length;
-                return (
-                  <TouchableOpacity
-                    key={r.id}
-                    style={shared.row}
-                    onPress={() => setDetailId(r.id)}
-                    onLongPress={() => deleteRecipeById(r.id, r.title)}
-                  >
-                    {r.image ? (
-                      <Image source={{ uri: r.image }} style={shared.thumb66} />
-                    ) : (
-                      <View style={[shared.thumb66, styles.thumbPlaceholder]}>
-                        <Text style={styles.thumbLetter}>
-                          {(r.title || '?').charAt(0).toUpperCase()}
+            <>
+              <View style={styles.recipeToolbar}>
+                <TextInput
+                  value={recipeSearch}
+                  onChangeText={setRecipeSearch}
+                  placeholder="Search recipes..."
+                  placeholderTextColor={DIM}
+                  style={styles.recipeSearchInput}
+                />
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.recipeFilterRow}
+                >
+                  {[
+                    { key: 'all', label: 'All' },
+                    { key: 'ready', label: '✅ Ready' },
+                    { key: 'missing', label: '🛒 Missing something' },
+                  ].map((f) => (
+                    <TouchableOpacity
+                      key={f.key}
+                      onPress={() => setRecipeFilter(f.key)}
+                      style={[styles.recipeFilterChip, recipeFilter === f.key && styles.recipeFilterChipSel]}
+                    >
+                      <Text
+                        style={[
+                          styles.recipeFilterChipText,
+                          recipeFilter === f.key && styles.recipeFilterChipTextSel,
+                        ]}
+                      >
+                        {f.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+              {(() => {
+                const q = recipeSearch.trim().toLowerCase();
+                const filtered = [...recipes]
+                  .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0))
+                  .filter((r) => !q || (r.title || '').toLowerCase().includes(q))
+                  .filter((r) => {
+                    if (recipeFilter === 'all') return true;
+                    const real = (r.ingredients || []).filter((i) => !i.isHeader);
+                    const missing = real.filter((i) => !ingredientHave(i, inventory)).length;
+                    return recipeFilter === 'ready' ? missing === 0 : missing > 0;
+                  });
+                if (filtered.length === 0) {
+                  return (
+                    <View style={shared.block}>
+                      <Text style={shared.tagline}>No recipes match that search/filter.</Text>
+                    </View>
+                  );
+                }
+                return filtered.map((r) => {
+                  const real = (r.ingredients || []).filter((i) => !i.isHeader);
+                  const missing = real.filter((i) => !ingredientHave(i, inventory)).length;
+                  return (
+                    <TouchableOpacity
+                      key={r.id}
+                      style={shared.row}
+                      onPress={() => setDetailId(r.id)}
+                      onLongPress={() => deleteRecipeById(r.id, r.title)}
+                    >
+                      {r.image ? (
+                        <Image source={{ uri: r.image }} style={shared.thumb66} />
+                      ) : (
+                        <View style={[shared.thumb66, styles.thumbPlaceholder]}>
+                          <Text style={styles.thumbLetter}>
+                            {(r.title || '?').charAt(0).toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={{ fontSize: 15, fontWeight: '600', color: INK }}>
+                          {r.title}
+                        </Text>
+                        <Text style={shared.tagline}>
+                          {real.length} ingredient{real.length === 1 ? '' : 's'}
+                          {missing > 0 ? ` • ${missing} missing` : real.length ? ' • have everything' : ''}
                         </Text>
                       </View>
-                    )}
-                    <View style={{ flex: 1, marginLeft: 10 }}>
-                      <Text style={{ fontSize: 15, fontWeight: '600', color: INK }}>
-                        {r.title}
-                      </Text>
-                      <Text style={shared.tagline}>
-                        {real.length} ingredient{real.length === 1 ? '' : 's'}
-                        {missing > 0 ? ` • ${missing} missing` : real.length ? ' • have everything' : ''}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
+                    </TouchableOpacity>
+                  );
+                });
+              })()}
+            </>
           )
         ) : groceries.length === 0 ? (
           <View style={shared.block}>
@@ -1708,6 +1767,36 @@ const styles = StyleSheet.create({
   subTabBtnSel: { backgroundColor: GOLD, borderColor: GOLD },
   subTabText: { fontSize: 14, fontWeight: '600', color: DIM },
   subTabTextSel: { color: '#fff' },
+  recipeSearchInput: {
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    color: INK,
+    fontSize: 14,
+    marginBottom: 10,
+  },
+  recipeToolbar: {
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  recipeFilterRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  recipeFilterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  recipeFilterChipSel: { backgroundColor: GOLD, borderColor: GOLD },
+  recipeFilterChipText: { fontSize: 12, fontWeight: '600', color: DIM },
+  recipeFilterChipTextSel: { color: '#fff' },
   thumbPlaceholder: {
     backgroundColor: '#232d3a',
     alignItems: 'center',

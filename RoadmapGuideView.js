@@ -11,6 +11,7 @@ import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 import { Image } from 'react-native';
 import { pickCompressedImage } from './imagePicker';
 import { Modal } from 'react-native';
+import { Alert } from 'react-native';
 import DrillSession from './DrillSession';
 import { DRILLS, drillLevelCount } from './drillEngine';
 import { LessonView, TestView } from './LessonView';
@@ -24,8 +25,13 @@ export default function RoadmapGuideView({ guide, progress: farmingProgress, set
   // Build photos are keyed by phase id inside the same progress object,
   // so they ride along with notes and check-offs and need no extra state.
   async function attachBuildPhoto(phaseId) {
-    const uri = await pickCompressedImage();
-    if (!uri) return;
+    const result = await pickCompressedImage();
+    if (result.error === 'permission') {
+      Alert.alert('Photo access needed', 'Allow photo library access to add a photo.');
+      return;
+    }
+    if (result.canceled || !result.uri) return;
+    const uri = result.uri;
     setFarmingProgress((prev) => {
       const cur = (prev || {})[phaseId] || {};
       return { ...(prev || {}), [phaseId]: { ...cur, photo: uri } };
