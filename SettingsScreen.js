@@ -204,8 +204,9 @@ export default function SettingsScreen({
           {
             text: 'Restore',
             style: 'destructive',
-            onPress: () => {
-              applyFullPayload(cloudData);
+            onPress: async () => {
+              setRestoreStatus('Restoring photos and data...');
+              await applyFullPayload(cloudData);
               setRestoreStatus('Restored from cloud backup.');
             },
           },

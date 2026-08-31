@@ -1,5 +1,6 @@
 import { getAuth, GoogleAuthProvider, signInWithCredential, signOut } from '@react-native-firebase/auth';
 import { toFirestoreFields, parseFirestoreDoc } from './firestoreSync';
+import { inlinePhotosForCloud } from './photoCloudSync';
 
 // Migrated to the modular API (React Native Firebase v22+). The old
 // namespaced style this used before - `auth.GoogleAuthProvider`,
@@ -122,7 +123,14 @@ export async function pushBackupToCloud(payload) {
   const uid = currentFirebaseUid();
   if (!uid) throw new Error('Not signed in.');
 
-  const json = JSON.stringify(payload);
+  // Swap every local file:// photo for its actual base64 data before
+  // measuring or sending anything - otherwise the backup only ever
+  // contains a path that's meaningless on any device but this one. See
+  // photoCloudSync.js for why this is safe with the chunked storage
+  // below.
+  const cloudPayload = await inlinePhotosForCloud(payload);
+
+  const json = JSON.stringify(cloudPayload);
   if (json.length > MAX_TOTAL_BYTES) {
     const err = new Error(
       `Backup too large to sync to the cloud (${(json.length / 1024 / 1024).toFixed(1)}MB, limit ~${(MAX_TOTAL_BYTES / 1024 / 1024).toFixed(0)}MB). Everything is still saved locally - it just can't sync until the data is smaller (usually means removing some photos).`

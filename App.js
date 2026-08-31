@@ -42,7 +42,7 @@ import { ensureNotificationPermissions, resyncAllHabitNotifications } from './no
 import { GOLD, INK, DIM, CARD, BORDER, BLUE, ROSE, glowRose } from './theme';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { signInToFirebaseWithGoogle, pushBackupToCloud, pullBackupFromCloud } from './firebaseSync';
-import { migrateBase64PhotosToFiles } from './photoMigration';
+import { migrateBase64PhotosToFiles, convertBase64PhotosToFilesInPlace } from './photoMigration';
 
 const STORAGE_KEY = 'tracker_expo_data_v12';
 
@@ -131,6 +131,10 @@ function MainApp() {
   const [bodyInventory, setBodyInventory] = useState([]);
   const [bodyExercises, setBodyExercises] = useState([]);
   const [infoCategories, setInfoCategories] = useState([]);
+  // Link entries per Information category — { [categoryId]: [{id, title, url, notes}] }.
+  // Keyed by category id so any category (built-in or custom, including
+  // the seeded Idleon/Soul-Arena ones) can hold its own saved links.
+  const [infoLinks, setInfoLinks] = useState({});
   const [ingredientLinkMemory, setIngredientLinkMemory] = useState({});
   const [placesKind, setPlacesKind] = useState('dating');
   const [trackerFilter, setTrackerFilter] = useState('all');
@@ -218,6 +222,7 @@ function MainApp() {
       bodyInventory,
       bodyExercises,
       infoCategories,
+      infoLinks,
       ingredientLinkMemory,
       habits,
       hero,
@@ -231,7 +236,14 @@ function MainApp() {
     };
   }
 
-  function applyFullPayload(p) {
+  async function applyFullPayload(p) {
+    // Cloud backups now carry photos as inline base64 (see
+    // photoCloudSync.js) precisely so a restore isn't left holding
+    // file:// paths to a photos folder that doesn't exist on this
+    // device/after this reset. Write them back out to real local files
+    // before anything below reads `p.*` into state, reusing the exact
+    // same conversion the one-time base64 migration already uses.
+    await convertBase64PhotosToFilesInPlace(p);
     setInventory(p.inventory || []);
     setCards(p.cards || []);
     setDatingPlaces(p.datingPlaces || []);
@@ -256,6 +268,7 @@ function MainApp() {
     setBodyInventory(p.bodyInventory || []);
     setBodyExercises(p.bodyExercises || []);
     setInfoCategories(p.infoCategories || []);
+    setInfoLinks(p.infoLinks || {});
     setIngredientLinkMemory(p.ingredientLinkMemory || {});
     setHabits(p.habits || []);
     setHero(p.hero || { weaponTier: 0, armorTier: 0, energy: 0, minionsDefeated: 0 });
@@ -322,7 +335,29 @@ function MainApp() {
         setBodyRoutines(saved.bodyRoutines || []);
         setBodyInventory(saved.bodyInventory || []);
         setBodyExercises(saved.bodyExercises || []);
-        setInfoCategories(saved.infoCategories || []);
+        // Idleon and Soul-Arena were asked for by name as the first two
+        // manually-tracked Information categories — seeded once here if
+        // they aren't already present (e.g. a fresh install), and never
+        // re-added if the user later deletes one on purpose.
+        const existingCats = saved.infoCategories || [];
+        const seedFlagKey = 'tracker_info_categories_seeded_v1';
+        const alreadySeeded = await AsyncStorage.getItem(seedFlagKey);
+        let catsToUse = existingCats;
+        if (!alreadySeeded) {
+          const haveIdleon = existingCats.some((c) => (c.name || '').toLowerCase() === 'idleon');
+          const haveSoulArena = existingCats.some((c) => (c.name || '').toLowerCase() === 'soul-arena');
+          const seeded = [];
+          if (!haveIdleon) {
+            seeded.push({ id: 'ic_idleon_seed', name: 'Idleon', icon: '🎮', color: '#4a7ba6' });
+          }
+          if (!haveSoulArena) {
+            seeded.push({ id: 'ic_soularena_seed', name: 'Soul-Arena', icon: '⚔️', color: '#7b6ca6' });
+          }
+          if (seeded.length) catsToUse = [...existingCats, ...seeded];
+          await AsyncStorage.setItem(seedFlagKey, '1');
+        }
+        setInfoCategories(catsToUse);
+        setInfoLinks(saved.infoLinks || {});
         setIngredientLinkMemory(saved.ingredientLinkMemory || {});
         // Only reached when the load genuinely succeeded, so this is the
         // only place saving gets enabled.
@@ -398,7 +433,7 @@ function MainApp() {
         await signInToFirebaseWithGoogle(tokens.idToken, tokens.accessToken);
         const cloudData = await pullBackupFromCloud();
         if (cloudData) {
-          applyFullPayload(cloudData);
+          await applyFullPayload(cloudData);
           if (userInfo && userInfo.data && userInfo.data.user) {
             setGoogleUser({
               name: userInfo.data.user.name,
@@ -451,6 +486,7 @@ function MainApp() {
       bodyInventory,
       bodyExercises,
       infoCategories,
+      infoLinks,
       ingredientLinkMemory,
       habits,
       hero,
@@ -525,6 +561,7 @@ function MainApp() {
     bodyInventory,
     bodyExercises,
     infoCategories,
+    infoLinks,
     ingredientLinkMemory,
     habits,
     hero,
@@ -730,6 +767,8 @@ function MainApp() {
           <InformationScreen
             infoCategories={infoCategories}
             setInfoCategories={setInfoCategories}
+            infoLinks={infoLinks}
+            setInfoLinks={setInfoLinks}
             onNavigate={handleInfoNavigate}
           />
         )}

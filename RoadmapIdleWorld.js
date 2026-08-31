@@ -131,7 +131,6 @@ export default function RoadmapIdleWorld({
 
   const todayKey = todayDateKey();
   const pendingHabits = (habits || []).filter((h) => !habitDoneOn(h, todayKey));
-<<<<<<< HEAD
 
   // Roadmap tasks, flattened out of cards -> goals -> tasks so the game
   // can treat "finish a real roadmap task" exactly like "finish a real
@@ -152,13 +151,10 @@ export default function RoadmapIdleWorld({
   const allTasks = flattenTasks(cards);
   const pendingTasks = allTasks.filter((t) => !t.done);
   const bossReady = pendingHabits.length === 0 && pendingTasks.length === 0;
-=======
-  const bossReady = pendingHabits.length === 0;
   // Longest current real habit streak - shown as a stat only, never fed
   // back into rewards/xp math itself (that stays exactly where it already
   // lives, in habitUtils/RoadmapsScreen). Purely a "how hot am I" readout.
   const bestStreak = (habits || []).reduce((max, h) => Math.max(max, habitStreak(h)), 0);
->>>>>>> d34e328 (Save current state)
 
   const [activeTab, setActiveTab] = useState('combat');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -190,52 +186,25 @@ export default function RoadmapIdleWorld({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [habits]);
 
-<<<<<<< HEAD
   // --- real roadmap-task completion -> same auto-fight queue --------------
   // Mirrors the habit effect above exactly: whenever a task flips from
   // not-done to done (whether that happened here in-game via onToggleTask,
   // or back in RoadmapsScreen's card/goal view), it queues a real fight.
-  // Tasks and habits share one queue, so they interleave naturally.
-  const prevTaskDoneRef = useRef(new Set());
+  // Tasks and habits share one queue, so they interleave naturally. Tasks
+  // aren't "daily" like habits (no pendingToday concept - a task is just
+  // done/not-done forever), so this only reacts to the done flag flipping
+  // true, and never contributes to the "quests remaining today" count,
+  // which stays habit-only.
+  const prevTaskDoneRef = useRef(new Set(allTasks.filter((t) => t.done).map((t) => t.id)));
   useEffect(() => {
     const nowDone = new Set(allTasks.filter((t) => t.done).map((t) => t.id));
     const newlyDone = allTasks.filter((t) => nowDone.has(t.id) && !prevTaskDoneRef.current.has(t.id));
     if (newlyDone.length) {
-      const entries = newlyDone.map((t) => ({ id: t.id, text: t.text }));
-=======
-  // --- real roadmap-task completion -> auto-fight queue --------------------
-  // Same treatment as habits above: finishing a task on a Roadmap card
-  // (RoadmapsScreen -> toggleTask) is a real, one-time event that should
-  // land a real hit in the game, not just move numbers behind the scenes.
-  // Tasks aren't "daily" like habits (no pendingToday concept - a task
-  // is just done/not-done forever), so this only ever reacts to the
-  // done flag flipping true, and never contributes to the "quests
-  // remaining today" count above, which stays habit-only.
-  function flattenRoadmapTasks(cardList) {
-    const out = [];
-    (cardList || []).forEach((c) => {
-      (c.goals || []).forEach((g) => {
-        (g.tasks || []).forEach((t) => {
-          out.push({ id: t.id, text: t.text, done: !!t.done, cardTitle: c.title, goalText: g.text });
-        });
-      });
-    });
-    return out;
-  }
-  const prevTaskDoneRef = useRef(
-    new Set(flattenRoadmapTasks(cards).filter((t) => t.done).map((t) => t.id))
-  );
-  useEffect(() => {
-    const flat = flattenRoadmapTasks(cards);
-    const nowDone = new Set(flat.filter((t) => t.done).map((t) => t.id));
-    const newlyDone = flat.filter((t) => nowDone.has(t.id) && !prevTaskDoneRef.current.has(t.id));
-    if (newlyDone.length) {
       const entries = newlyDone.map((t) => ({
         id: t.id,
-        text: `${t.goalText}: ${t.text}`,
+        text: `${t.goalTitle}: ${t.text}`,
         kind: 'task',
       }));
->>>>>>> d34e328 (Save current state)
       setQueue((q) => [...q, ...entries]);
       setReadyQuests((prev) => [...prev, ...entries]);
       entries.forEach((e) => {
@@ -654,11 +623,7 @@ export default function RoadmapIdleWorld({
                 {queue.length > 0 && hero.energy < cost ? (
                   <Text style={styles.hint}>Waiting on Ki - complete a task to earn more.</Text>
                 ) : (
-<<<<<<< HEAD
-                  <Text style={styles.hint}>Complete a habit or roadmap task in real life - it auto-resolves here.</Text>
-=======
                   <Text style={styles.hint}>Complete a habit or a Roadmap task in real life - it auto-resolves here.</Text>
->>>>>>> d34e328 (Save current state)
                 )}
                 {displayTarget ? (
                   <>
@@ -718,7 +683,6 @@ export default function RoadmapIdleWorld({
             ) : (
               <>
                 {pendingHabits.map((h) => (
-<<<<<<< HEAD
                   <Row key={h.id} icon="🔁" label={h.text} value="pending" />
                 ))}
                 {pendingTasks.map((t) => (
@@ -735,11 +699,6 @@ export default function RoadmapIdleWorld({
                   </TouchableOpacity>
                 ))}
                 {readyQuests.map((q) => (
-                  <Row key={q.id} icon="✅" label={q.text} value="cleared" valueStyle={styles.valueGood} />
-=======
-                  <Row key={h.id} icon="📜" label={h.text} value="pending" />
-                ))}
-                {readyQuests.map((q) => (
                   <Row
                     key={q.id}
                     icon={q.kind === 'task' ? '🗺️' : '📜'}
@@ -747,7 +706,7 @@ export default function RoadmapIdleWorld({
                     value="cleared"
                     valueStyle={styles.valueGood}
                   />
->>>>>>> d34e328 (Save current state)
+
                 ))}
               </>
             )}

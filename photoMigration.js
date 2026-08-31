@@ -55,14 +55,17 @@ async function migrateOneValue(value) {
 
 // Walks the tree in place (no full clone, to keep the migration itself
 // memory-light) converting every embedded base64 photo it finds.
-async function walk(node) {
+// Exported separately from the once-only migration below so a cloud
+// restore (photoCloudSync.js) can reuse the exact same conversion on
+// every pull, not just once ever.
+export async function convertBase64PhotosToFilesInPlace(node) {
   if (Array.isArray(node)) {
     for (let i = 0; i < node.length; i++) {
       const v = node[i];
       if (typeof v === 'string') {
         if (v.startsWith('data:image/')) node[i] = await migrateOneValue(v);
       } else if (v && typeof v === 'object') {
-        await walk(v);
+        await convertBase64PhotosToFilesInPlace(v);
       }
     }
   } else if (node && typeof node === 'object') {
@@ -71,7 +74,7 @@ async function walk(node) {
       if (typeof v === 'string') {
         if (v.startsWith('data:image/')) node[key] = await migrateOneValue(v);
       } else if (v && typeof v === 'object') {
-        await walk(v);
+        await convertBase64PhotosToFilesInPlace(v);
       }
     }
   }
@@ -85,7 +88,7 @@ export async function migrateBase64PhotosToFiles(payload) {
   const already = await AsyncStorage.getItem(MIGRATION_FLAG_KEY);
   if (already === '1') return;
 
-  await walk(payload);
+  await convertBase64PhotosToFilesInPlace(payload);
 
   await AsyncStorage.setItem(MIGRATION_FLAG_KEY, '1');
 }
