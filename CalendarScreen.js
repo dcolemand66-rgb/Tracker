@@ -23,34 +23,14 @@ import { cancelTodayForHabit, scheduleTodoNotification, cancelTodoNotification }
 import DateTimePicker from '@react-native-community/datetimepicker';
 import CalendarGrid from './CalendarGrid';
 
-export default function CalendarScreen({ data, habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, calendarViewMode, todoItems, setTodoItems, bodyRoutines, setBodyRoutines, onOpenHabit, bills, onOpenDating, sideQuests, setSideQuests }) {
+export default function CalendarScreen({ data, habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, calendarViewMode, todoItems, setTodoItems, bodyRoutines, setBodyRoutines, onOpenHabit, bills, onOpenDating, onOpenSideQuests }) {
   const [search, setSearch] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
   const [todoModalOpen, setTodoModalOpen] = useState(false);
   const [datingOpen, setDatingOpen] = useState(false);
-  const [sideQuestsOpen, setSideQuestsOpen] = useState(false);
-  const [sideQuestDraft, setSideQuestDraft] = useState('');
   const [todoDraft, setTodoDraft] = useState('');
   const [todoReminderTime, setTodoReminderTime] = useState('');
   const [showTodoTimePicker, setShowTodoTimePicker] = useState(false);
-
-  // Side Quests - a quick, low-friction "things I'm into" checklist,
-  // separate from the structured Roadmaps goal cards.
-  function addSideQuest() {
-    const text = sideQuestDraft.trim();
-    if (!text) return;
-    setSideQuests((prev) => [
-      ...(prev || []),
-      { id: 'sq' + Date.now() + Math.random().toString(36).slice(2, 8), text, done: false, addedAt: Date.now() },
-    ]);
-    setSideQuestDraft('');
-  }
-  function toggleSideQuest(id) {
-    setSideQuests((prev) => (prev || []).map((q) => (q.id === id ? { ...q, done: !q.done } : q)));
-  }
-  function deleteSideQuest(id) {
-    setSideQuests((prev) => (prev || []).filter((q) => q.id !== id));
-  }
 
   function timeStringToDate(timeStr) {
     const d = new Date();
@@ -249,46 +229,42 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
 
   return (
     <ScrollView contentContainerStyle={shared.container}>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-        <View style={{ flex: 1 }}>
-          <Text style={shared.h1}>Calendar</Text>
-          <Text style={shared.tagline}>
-            {dateLabel} • {timeLabel}
-          </Text>
-        </View>
-        <View style={{ alignItems: 'flex-end' }}>
+      <View>
+        <Text style={shared.h1}>Calendar</Text>
+        <Text style={shared.tagline}>
+          {dateLabel} • {timeLabel}
+        </Text>
+      </View>
+      <View style={{ flexDirection: 'row', marginTop: 10, marginBottom: 4 }}>
+        <TouchableOpacity
+          onPress={onOpenSideQuests}
+          style={{
+            backgroundColor: CARD,
+            borderWidth: 1,
+            borderColor: GOLD,
+            borderRadius: 14,
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            marginRight: onOpenDating ? 8 : 0,
+          }}
+        >
+          <Text style={{ color: GOLD, fontSize: 12, fontWeight: '700' }}>🗺️ Side Quests</Text>
+        </TouchableOpacity>
+        {onOpenDating ? (
           <TouchableOpacity
-            onPress={() => setSideQuestsOpen(true)}
+            onPress={() => setDatingOpen(true)}
             style={{
               backgroundColor: CARD,
               borderWidth: 1,
-              borderColor: GOLD,
-              borderRadius: 16,
-              paddingHorizontal: 12,
-              paddingVertical: 7,
-              marginTop: 4,
-              marginBottom: onOpenDating ? 8 : 0,
+              borderColor: BORDER,
+              borderRadius: 14,
+              paddingHorizontal: 10,
+              paddingVertical: 6,
             }}
           >
-            <Text style={{ color: GOLD, fontSize: 13, fontWeight: '700' }}>🗺️ Side Quests</Text>
+            <Text style={{ color: INK, fontSize: 12, fontWeight: '700' }}>💕 Dating</Text>
           </TouchableOpacity>
-          {onOpenDating ? (
-            <TouchableOpacity
-              onPress={() => setDatingOpen(true)}
-              style={{
-                backgroundColor: CARD,
-                borderWidth: 1,
-                borderColor: BORDER,
-                borderRadius: 16,
-                paddingHorizontal: 12,
-                paddingVertical: 7,
-                marginTop: 4,
-              }}
-            >
-              <Text style={{ color: INK, fontSize: 13, fontWeight: '700' }}>💕 Dating</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+        ) : null}
       </View>
 
       {calendarViewMode === 'grid' ? (
@@ -504,7 +480,8 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
                 h.sessionType === 'workout' ||
                 h.sessionType === 'reading' ||
                 h.sessionType === 'selfcare' ||
-                h.sessionType === 'cardistry';
+                h.sessionType === 'cardistry' ||
+                h.sessionType === 'chess';
               return (
                 <TouchableOpacity
                   key={h.id}
@@ -529,6 +506,8 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
                         ? '🧖'
                         : h.sessionType === 'cardistry'
                         ? '🎴'
+                        : h.sessionType === 'chess'
+                        ? '♟️'
                         : '🧘'}
                     </Text>
                   ) : (
@@ -653,100 +632,6 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
       </Modal>
 
       <Modal
-        visible={sideQuestsOpen}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setSideQuestsOpen(false)}
-      >
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' }}>
-          <View
-            style={{
-              backgroundColor: CARD,
-              borderTopLeftRadius: 20,
-              borderTopRightRadius: 20,
-              padding: 20,
-              paddingBottom: 40,
-              maxHeight: '80%',
-            }}
-          >
-            <Text style={{ fontSize: 20, fontWeight: '700', color: INK, marginBottom: 4 }}>
-              🗺️ Side Quests
-            </Text>
-            <Text style={[shared.tagline, { marginBottom: 12 }]}>
-              Whatever you're into right now - no goal cards, no lessons, just a list.
-            </Text>
-
-            <View style={{ flexDirection: 'row', marginBottom: 14 }}>
-              <TextInput
-                value={sideQuestDraft}
-                onChangeText={setSideQuestDraft}
-                onSubmitEditing={addSideQuest}
-                placeholder="Learn to whittle, try that new trail..."
-                placeholderTextColor={DIM}
-                style={{
-                  flex: 1,
-                  backgroundColor: '#1f1a15',
-                  borderWidth: 1,
-                  borderColor: BORDER,
-                  borderRadius: 10,
-                  paddingHorizontal: 12,
-                  paddingVertical: 9,
-                  color: INK,
-                  fontSize: 14,
-                  marginRight: 8,
-                }}
-              />
-              <TouchableOpacity
-                onPress={addSideQuest}
-                style={{
-                  backgroundColor: GOLD,
-                  borderRadius: 10,
-                  paddingHorizontal: 16,
-                  justifyContent: 'center',
-                }}
-              >
-                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>Add</Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView>
-              {!sideQuests || sideQuests.length === 0 ? (
-                <Text style={shared.tagline}>
-                  Nothing here yet - add a passion, hobby, or itch you want to scratch.
-                </Text>
-              ) : (
-                sideQuests.map((q) => (
-                  <TouchableOpacity
-                    key={q.id}
-                    style={shared.row}
-                    onPress={() => toggleSideQuest(q.id)}
-                    onLongPress={() => deleteSideQuest(q.id)}
-                  >
-                    <Text style={{ fontSize: 16, marginRight: 10 }}>{q.done ? '✅' : '⬜'}</Text>
-                    <Text
-                      style={[
-                        shared.rowName,
-                        q.done ? { color: DIM, textDecorationLine: 'line-through' } : null,
-                      ]}
-                    >
-                      {q.text}
-                    </Text>
-                  </TouchableOpacity>
-                ))
-              )}
-            </ScrollView>
-
-            <TouchableOpacity
-              style={{ paddingVertical: 10, alignItems: 'center' }}
-              onPress={() => setSideQuestsOpen(false)}
-            >
-              <Text style={{ color: DIM, fontSize: 14 }}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
         visible={todoModalOpen}
         animationType="slide"
         transparent
@@ -841,4 +726,3 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
     </ScrollView>
   );
 }
-

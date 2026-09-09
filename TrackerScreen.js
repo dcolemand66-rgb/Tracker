@@ -15,52 +15,17 @@ import { pickCompressedImage } from './imagePicker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 import TrackerCard from './TrackerCard';
+import {
+  isEpisodicCategory,
+  isMangaCategory,
+  isGameCategory,
+  catLabel,
+  catColor,
+  appendProgressLog,
+  estimateCompletion,
+} from './trackerMath';
 
-const EPISODIC_LABELS = ['anime', 'tv series', 'tv show', 'tv'];
-const MANGA_LABELS = ['manga', 'comic', 'comics', 'manhwa', 'webtoon'];
-const GAME_LABELS = ['game', 'games', 'video game', 'video games'];
 const MOVIE_LABELS = ['movie', 'movies', 'film', 'films'];
-
-function isEpisodicCategory(categories, catId) {
-  if (catId === 'anime' || catId === 'tv_series') return true;
-  const cat = categories.find((c) => c.id === catId);
-  if (!cat) return false;
-  return EPISODIC_LABELS.includes((cat.label || '').trim().toLowerCase());
-}
-
-// Manga (and similar) track progress by chapter instead of episode, and
-// don't use the "Coming Soon" release-date flow the way a show or game does.
-function isMangaCategory(categories, catId) {
-  if (catId === 'manga') return true;
-  const cat = categories.find((c) => c.id === catId);
-  if (!cat) return false;
-  return MANGA_LABELS.includes((cat.label || '').trim().toLowerCase());
-}
-
-// Games track progress by completion % instead of episode/chapter count.
-// The id check alone used to be the only path (item.category === 'game'
-// with no fallback at all) - if a user's actual "Games" category didn't
-// happen to have that exact id (e.g. one made through "+ New Category",
-// which assigns a random id), the % tracking silently never activated.
-// This now matches the same permanent-id + label-fallback pattern as
-// manga/anime above.
-function isGameCategory(categories, catId) {
-  if (catId === 'game') return true;
-  const cat = categories.find((c) => c.id === catId);
-  if (!cat) return false;
-  return GAME_LABELS.includes((cat.label || '').trim().toLowerCase());
-}
-
-function catLabel(categories, id) {
-  const c = categories.find((c) => c.id === id);
-  return c ? c.label : 'Other';
-}
-
-function catColor(categories, id) {
-  const c = categories.find((c) => c.id === id);
-  return c ? c.color : '#8a8474';
-}
-
 function getYouTubeId(url) {
   try {
     const u = new URL(url);
@@ -105,6 +70,7 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
   const [activeFilter, setActiveFilter] = useState('all');
   const [hasAppliedDefault, setHasAppliedDefault] = useState(false);
   const [activeSub, setActiveSub] = useState('all'); // 'all' | 'coming_soon' | 'in_progress'
+  const [fastestMode, setFastestMode] = useState(false);
   useEffect(() => {
     if (initialFilter && initialFilter !== 'all') {
       setActiveFilter(initialFilter);
@@ -227,6 +193,27 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
       updatedAt: Date.now(),
     };
     if (editingId) {
+      // Editing an existing item through this form is also a valid place
+      // for progress to move forward (typing a new chapter/episode count
+      // rather than using the quick +/- steppers) - log it here too, the
+      // same way the steppers do, so the pace estimate doesn't only see
+      // stepper taps.
+      const prevItem = items.find((it) => it.id === editingId);
+      let progressLog = prevItem ? prevItem.progressLog : undefined;
+      if (prevItem) {
+        if (isManga && item.progressCurrent > (Number(prevItem.progressCurrent) || 0)) {
+          progressLog = appendProgressLog(prevItem, item.progressCurrent);
+        } else if (isGameCategory(categories, draft.category) && item.gamePercent > (Number(prevItem.gamePercent) || 0)) {
+          progressLog = appendProgressLog(prevItem, item.gamePercent);
+        } else if (
+          !isManga &&
+          !isGameCategory(categories, draft.category) &&
+          item.epCurrent > (Number(prevItem.epCurrent) || 0)
+        ) {
+          progressLog = appendProgressLog(prevItem, item.epCurrent);
+        }
+      }
+      item.progressLog = progressLog;
       setItems((prev) => prev.map((it) => (it.id === editingId ? item : it)));
     } else {
       setItems((prev) => [...prev, item]);
@@ -337,7 +324,11 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
     if (next < 0) next = 0;
     if (item.epTotal > 0 && next > item.epTotal) next = item.epTotal;
     setItems((prev) =>
-      prev.map((it) => (it.id === item.id ? { ...it, epCurrent: next } : it))
+      prev.map((it) =>
+        it.id === item.id
+          ? { ...it, epCurrent: next, progressLog: delta > 0 ? appendProgressLog(it, next) : it.progressLog }
+          : it
+      )
     );
     if (!wasComplete && item.epTotal > 0 && next >= item.epTotal) {
       promptItemCompletion({ ...item, epCurrent: next });
@@ -349,7 +340,11 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
     let next = (Number(item.gamePercent) || 0) + delta;
     next = Math.max(0, Math.min(100, next));
     setItems((prev) =>
-      prev.map((it) => (it.id === item.id ? { ...it, gamePercent: next } : it))
+      prev.map((it) =>
+        it.id === item.id
+          ? { ...it, gamePercent: next, progressLog: delta > 0 ? appendProgressLog(it, next) : it.progressLog }
+          : it
+      )
     );
     if (!wasComplete && next >= 100) {
       promptItemCompletion({ ...item, gamePercent: next });
@@ -382,12 +377,28 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
     const t = search.trim().toLowerCase();
     filtered = filtered.filter((i) => i.title.toLowerCase().includes(t));
   }
-  filtered = [...filtered].sort((a, b) => {
-    const aCS = a.status === 'coming_soon' ? 1 : 0;
-    const bCS = b.status === 'coming_soon' ? 1 : 0;
-    if (aCS !== bCS) return aCS - bCS;
-    return (b.updatedAt || 0) - (a.updatedAt || 0);
-  });
+  // "Fastest to Finish" is automatic - it only needs a Current/Total
+  // already entered on the item (from the Add/Edit form), nothing extra
+  // to log first. Ranked by percent complete, so whichever item has the
+  // least left is listed first; a logged-pace day estimate rides along
+  // as a bonus wherever there's enough history for one.
+  const completionById = {};
+  if (fastestMode) {
+    filtered = filtered.filter((i) => {
+      const c = estimateCompletion(i, categories);
+      if (!c) return false;
+      completionById[i.id] = c;
+      return true;
+    });
+    filtered = [...filtered].sort((a, b) => completionById[a.id].remainingPercent - completionById[b.id].remainingPercent);
+  } else {
+    filtered = [...filtered].sort((a, b) => {
+      const aCS = a.status === 'coming_soon' ? 1 : 0;
+      const bCS = b.status === 'coming_soon' ? 1 : 0;
+      if (aCS !== bCS) return aCS - bCS;
+      return (b.updatedAt || 0) - (a.updatedAt || 0);
+    });
+  }
 
   const epItem = items.find((i) => i.id === epModalId);
   const activeFilterLabel =
@@ -425,6 +436,12 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
             </Text>
           </View>
           <TouchableOpacity
+            style={[styles.iconBtn, fastestMode && styles.iconBtnActive]}
+            onPress={() => setFastestMode((f) => !f)}
+          >
+            <Text style={styles.iconBtnText}>⚡</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => setSearchOpen((s) => !s)}
           >
@@ -434,6 +451,12 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
             <Text style={styles.iconBtnText}>⚙️</Text>
           </TouchableOpacity>
         </View>
+
+        {fastestMode ? (
+          <Text style={[shared.tagline, { marginTop: -12 }]}>
+            ⚡ Fastest to Finish — sorted by remaining percentage, lowest left first.
+          </Text>
+        ) : null}
 
         {searchOpen ? (
           <TextInput
@@ -449,10 +472,12 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
         {filtered.length === 0 ? (
           <View style={shared.block}>
             <Text style={{ fontSize: 16, fontWeight: '600', color: INK, marginBottom: 4 }}>
-              Nothing here yet
+              {fastestMode ? 'Nothing with a total yet' : 'Nothing here yet'}
             </Text>
             <Text style={shared.tagline}>
-              Tap + to log something you're watching, playing, or reading.
+              {fastestMode
+                ? 'Give something a Current/Total (episodes, chapters, or completion %) and it shows up here automatically.'
+                : "Tap + to log something you're watching, playing, or reading."}
             </Text>
           </View>
         ) : (
@@ -463,6 +488,12 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
               const isEpisodic = isEpisodicCategory(categories, item.category);
               const color = catColor(categories, item.category);
               const label = catLabel(categories, item.category);
+              const completion = fastestMode ? completionById[item.id] : null;
+              const etaLabel = completion
+                ? completion.days
+                  ? `${completion.remainingPercent}% remaining · ~${completion.days} day${completion.days === 1 ? '' : 's'} left at this pace`
+                  : `${completion.remainingPercent}% remaining · ${completion.remaining} left`
+                : null;
               return (
                 <TrackerCard
                   key={item.id}
@@ -477,6 +508,7 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
                   onManageProgress={() => setEpModalId(item.id)}
                   onAdjustEpisode={adjustEpisode}
                   onAdjustGamePercent={adjustGamePercent}
+                  etaLabel={etaLabel}
                 />
               );
             })}
@@ -898,6 +930,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   iconBtnText: { fontSize: 17 },
+  iconBtnActive: { backgroundColor: GOLD },
   chipSel: { backgroundColor: GOLD, borderColor: GOLD },
   grid: {
     flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between',
@@ -1086,4 +1119,3 @@ const styles = StyleSheet.create({
   cancelBtn: { paddingVertical: 10, alignItems: 'center', marginTop: 2 },
   cancelBtnText: { color: DIM, fontSize: 14 },
 });
-

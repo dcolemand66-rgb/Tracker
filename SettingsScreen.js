@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ScrollView, View, Text, TouchableOpacity, Image, StyleSheet, Alert } from 'react-native';
+import { ScrollView, View, Text, TextInput, TouchableOpacity, Image, StyleSheet, Alert } from 'react-native';
 import {
   GoogleSignin,
   isErrorWithCode,
@@ -11,6 +11,7 @@ import { resetTodayHabits } from './habitUtils';
 import { sendTestNotification, getScheduledSummary, resyncAllHabitNotifications } from './notifications';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 import ColorWheelPicker from './ColorWheelPicker';
+import { defaultGrowth, suggestGrowthDefaults, currentGrowthTarget, completionsUntilNextStep, completionsSinceStart } from './growthMath';
 
 // This must match whatever Web Client ID Firebase's own Google sign-in
 // provider is configured to trust (Firebase Console -> Authentication ->
@@ -52,6 +53,65 @@ export default function SettingsScreen({
   const [pushStatus, setPushStatus] = useState('');
   const [colorError, setColorError] = useState('');
   const [notifStatus, setNotifStatus] = useState('');
+  const [growthEditId, setGrowthEditId] = useState(null);
+  const [growthDraft, setGrowthDraft] = useState({ startValue: '10', amount: '2', everyDays: '3', unit: 'reps' });
+
+  // Growing targets - same feature as the per-habit "Growing Target"
+  // section on each habit's detail view, gathered here so every habit
+  // that uses one can be reviewed and adjusted from a single place
+  // instead of opening each habit individually.
+  function setHabitGrowth(habitId, updater) {
+    setHabits((prev) =>
+      prev.map((h) => (h.id === habitId ? { ...h, growth: updater(h.growth || defaultGrowth()) } : h))
+    );
+  }
+
+  function openGrowthForm(habit) {
+    const g = habit.growth || defaultGrowth(habit.text);
+    setGrowthDraft({
+      startValue: String(g.startValue ?? 10),
+      amount: String(g.amount ?? 2),
+      everyDays: String(g.everyDays ?? 3),
+      unit: g.unit || 'reps',
+    });
+    setGrowthEditId(habit.id);
+  }
+
+  // One tap, no typing: turns growth on using a suggested starting shape
+  // for this habit (keyword-matched, e.g. pushups vs. reading get
+  // different defaults) - the form below is only for someone who wants
+  // to override those numbers, not a required step to get going.
+  function autoEnableGrowth(habit) {
+    const suggested = suggestGrowthDefaults(habit.text);
+    setHabitGrowth(habit.id, (g) => ({
+      ...g,
+      ...suggested,
+      enabled: true,
+      startedAt: Date.now(),
+    }));
+  }
+
+  function saveGrowthSettings(habitId) {
+    const startValue = Math.max(0, Number(growthDraft.startValue) || 0);
+    const amount = Math.max(0, Number(growthDraft.amount) || 0);
+    const everyDays = Math.max(1, Number(growthDraft.everyDays) || 1);
+    const unit = growthDraft.unit.trim() || 'reps';
+    setHabitGrowth(habitId, (g) => ({
+      ...g,
+      enabled: true,
+      startValue,
+      amount,
+      everyDays,
+      unit,
+      startedAt: g.startedAt || Date.now(),
+    }));
+    setGrowthEditId(null);
+  }
+
+  function turnOffGrowth(habitId) {
+    setHabitGrowth(habitId, (g) => ({ ...g, enabled: false }));
+    setGrowthEditId(null);
+  }
 
   async function runNotificationTest() {
     setNotifStatus('Sending a test notification in 5 seconds...');
@@ -345,6 +405,105 @@ export default function SettingsScreen({
         ) : null}
 
         <View style={shared.block}>
+          <Text style={styles.sectionLabel}>Habit Growth</Text>
+          <Text style={[shared.tagline, { marginBottom: 12 }]}>
+            Habits with a growing target (like pushups climbing over time)
+            all in one place, instead of opening each one individually.
+          </Text>
+          {habits.length === 0 ? (
+            <Text style={shared.tagline}>No habits yet.</Text>
+          ) : (
+            habits.map((h) => {
+              const g = h.growth;
+              const isOn = g && g.enabled;
+              const isEditing = growthEditId === h.id;
+              const completions = isOn ? completionsSinceStart(h, g) : 0;
+              return (
+                <View key={h.id} style={styles.growthRow}>
+                  <TouchableOpacity
+                    style={styles.growthRowHead}
+                    onPress={() => (isEditing ? setGrowthEditId(null) : isOn ? openGrowthForm(h) : null)}
+                    disabled={!isOn && !isEditing}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.growthRowName}>{h.text}</Text>
+                      {isOn ? (
+                        <Text style={styles.growthRowStatus}>
+                          {currentGrowthTarget(g, completions)} {g.unit} today · +{g.amount} every {g.everyDays}{' '}
+                          completions · next step in {completionsUntilNextStep(g, completions)} more
+                        </Text>
+                      ) : (
+                        <Text style={styles.growthRowStatusOff}>Not set up</Text>
+                      )}
+                    </View>
+                    {isOn ? <Text style={styles.growthRowChevron}>{isEditing ? '▲' : '▼'}</Text> : null}
+                  </TouchableOpacity>
+
+                  {!isOn && !isEditing ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', paddingBottom: 10 }}>
+                      <TouchableOpacity style={styles.growthAutoBtn} onPress={() => autoEnableGrowth(h)}>
+                        <Text style={styles.growthAutoBtnText}>⚡ Turn On (Auto)</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => openGrowthForm(h)} style={{ marginLeft: 14 }}>
+                        <Text style={{ color: DIM, fontSize: 12 }}>Customize first</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+
+                  {isEditing ? (
+                    <View style={styles.growthFormCard}>
+                      <Text style={styles.growthLabel}>Starting value</Text>
+                      <TextInput
+                        style={styles.growthInput}
+                        value={growthDraft.startValue}
+                        onChangeText={(v) => setGrowthDraft((d) => ({ ...d, startValue: v }))}
+                        keyboardType="numeric"
+                        placeholder="10"
+                        placeholderTextColor={DIM}
+                      />
+                      <Text style={styles.growthLabel}>Grows by</Text>
+                      <TextInput
+                        style={styles.growthInput}
+                        value={growthDraft.amount}
+                        onChangeText={(v) => setGrowthDraft((d) => ({ ...d, amount: v }))}
+                        keyboardType="numeric"
+                        placeholder="2"
+                        placeholderTextColor={DIM}
+                      />
+                      <Text style={styles.growthLabel}>Every X days</Text>
+                      <TextInput
+                        style={styles.growthInput}
+                        value={growthDraft.everyDays}
+                        onChangeText={(v) => setGrowthDraft((d) => ({ ...d, everyDays: v }))}
+                        keyboardType="numeric"
+                        placeholder="3"
+                        placeholderTextColor={DIM}
+                      />
+                      <Text style={styles.growthLabel}>Unit</Text>
+                      <TextInput
+                        style={styles.growthInput}
+                        value={growthDraft.unit}
+                        onChangeText={(v) => setGrowthDraft((d) => ({ ...d, unit: v }))}
+                        placeholder="reps, minutes, pages..."
+                        placeholderTextColor={DIM}
+                      />
+                      <TouchableOpacity style={styles.growthSaveBtn} onPress={() => saveGrowthSettings(h.id)}>
+                        <Text style={styles.growthSaveBtnText}>Save</Text>
+                      </TouchableOpacity>
+                      {isOn ? (
+                        <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => turnOffGrowth(h.id)}>
+                          <Text style={{ color: ROSE, fontSize: 13 }}>Turn off growth for this habit</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })
+          )}
+        </View>
+
+        <View style={shared.block}>
           <Text style={styles.sectionLabel}>Roadmap Game</Text>
           <Text style={[shared.tagline, { marginBottom: 12 }]}>
             Start your Level, Stats, Rewards, and hero gear over from
@@ -438,6 +597,41 @@ export default function SettingsScreen({
 }
 
 const styles = StyleSheet.create({
+  growthRow: { borderBottomWidth: 1, borderBottomColor: BORDER, paddingVertical: 4 },
+  growthRowHead: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  growthRowName: { color: INK, fontSize: 15, fontWeight: '700' },
+  growthRowStatus: { color: GOLD, fontSize: 12, marginTop: 2 },
+  growthRowStatusOff: { color: DIM, fontSize: 12, marginTop: 2 },
+  growthRowChevron: { color: DIM, fontSize: 12, marginLeft: 10 },
+  growthFormCard: { paddingBottom: 12 },
+  growthLabel: { fontSize: 12, fontWeight: '600', color: DIM, marginTop: 10, marginBottom: 6 },
+  growthInput: {
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: INK,
+  },
+  growthSaveBtn: {
+    backgroundColor: GOLD,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  growthSaveBtnText: { color: '#1c1206', fontSize: 15, fontWeight: '700' },
+  growthAutoBtn: {
+    backgroundColor: GOLD,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    alignSelf: 'flex-start',
+    marginBottom: 10,
+  },
+  growthAutoBtnText: { color: '#1c1206', fontSize: 13, fontWeight: '700' },
   sectionLabel: {
     fontSize: 12,
     fontWeight: '700',
@@ -524,5 +718,3 @@ const styles = StyleSheet.create({
   optionChipText: { color: INK, fontSize: 13, fontWeight: '600' },
   optionChipTextSel: { color: '#fff', fontWeight: '800' },
 });
-
-

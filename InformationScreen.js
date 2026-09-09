@@ -1,16 +1,18 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ScrollView,
   View,
   Text,
   TextInput,
   TouchableOpacity,
-  Modal,
   StyleSheet,
   Alert,
-  Linking,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
+import { fetchLinkPreview } from './linkPreview';
+import LinkCard from './LinkCard';
 
 const PERMANENT_TILES = [
   { id: 'recipes', name: 'Recipes', icon: '🍛', color: '#b8705c' },
@@ -18,23 +20,19 @@ const PERMANENT_TILES = [
   { id: 'traveling', name: 'Traveling', icon: '✈️', color: '#4a7ba6' },
   { id: 'inventory', name: 'Inventory', icon: '📦', color: '#8a9a4b' },
   { id: 'restaurants', name: 'Restaurants', icon: '🍽️', color: '#c2685a' },
+  { id: 'websites', name: 'Websites', icon: '🌐', color: '#3f8f82' },
 ];
 
-const ICON_CHOICES = ['📌','📖','🎓','🏠','🚗','⚕️','📄','🔧','🌱','🎁','📷','🎵','🧳','💼','🗂️'];
-const COLOR_CHOICES = ['#b8705c','#3f8f82','#bc9440','#7b6ca6','#5b7b8b','#4a7ba6','#8a9a4b','#c2685a'];
-
-function makeId() {
-  return 'ic' + Date.now() + Math.random().toString(36).slice(2, 8);
-}
 function makeLinkId() {
   return 'lk' + Date.now() + Math.random().toString(36).slice(2, 8);
 }
 
-// A saved link is just { id, title, url, notes }. Tapping it opens the
-// URL; a normalizeUrl step means "example.com" and "www.example.com"
-// both work without the user having to remember to type https://.
+// A saved link is just { id, title, url, notes, image, description }.
+// Tapping it opens the URL; a normalizeUrl step means "example.com" and
+// "www.example.com" both work without the user having to remember to
+// type https://.
 function normalizeUrl(raw) {
-  const v = raw.trim();
+  const v = (raw || '').trim();
   if (!v) return v;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(v)) return v;
   return 'https://' + v;
@@ -47,26 +45,14 @@ export default function InformationScreen({
   setInfoLinks,
   onNavigate,
 }) {
-  const [modalOpen, setModalOpen] = useState(false);
-  const [draft, setDraft] = useState({ name: '', icon: ICON_CHOICES[0], color: COLOR_CHOICES[0] });
   const [linksOpenFor, setLinksOpenFor] = useState(null); // category id
-  const [linkDraft, setLinkDraft] = useState({ title: '', url: '', notes: '' });
   const [linkFormOpen, setLinkFormOpen] = useState(false);
+  const [linkDraft, setLinkDraft] = useState({ title: '', url: '', notes: '', image: '', description: '' });
   const [editingLinkId, setEditingLinkId] = useState(null);
-
-  function saveCategory() {
-    const name = draft.name.trim();
-    if (!name) {
-      Alert.alert('Name required', 'Give this category a name.');
-      return;
-    }
-    setInfoCategories((prev) => [
-      ...prev,
-      { id: makeId(), name, icon: draft.icon, color: draft.color },
-    ]);
-    setDraft({ name: '', icon: ICON_CHOICES[0], color: COLOR_CHOICES[0] });
-    setModalOpen(false);
-  }
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const [backfillingId, setBackfillingId] = useState(null);
+  const previewDebounce = useRef(null);
 
   function deleteCategory(id) {
     Alert.alert('Delete category?', 'This also removes any links saved in it.', [
@@ -93,21 +79,91 @@ export default function InformationScreen({
     if (id === 'traveling') return onNavigate('travel');
     if (id === 'inventory') return onNavigate('inventory');
     if (id === 'restaurants') return onNavigate('restaurants');
-    // Custom categories are a link tracker — the site for saving
-    // important URLs (and, per Idleon/Soul-Arena, any manually-entered
-    // notes/links for whatever the category is about).
+    // Websites, and any leftover custom categories, are a link tracker -
+    // opens as its own full page below, not a popup over this one.
     setLinksOpenFor(id);
+    setLinkFormOpen(false);
   }
 
   function openLinkForm(existing) {
+    setPreviewError('');
+    setPreviewLoading(false);
     if (existing) {
       setEditingLinkId(existing.id);
-      setLinkDraft({ title: existing.title, url: existing.url, notes: existing.notes || '' });
+      setLinkDraft({
+        title: existing.title,
+        url: existing.url,
+        notes: existing.notes || '',
+        image: existing.image || '',
+        description: existing.description || '',
+      });
     } else {
       setEditingLinkId(null);
-      setLinkDraft({ title: '', url: '', notes: '' });
+      setLinkDraft({ title: '', url: '', notes: '', image: '', description: '' });
     }
     setLinkFormOpen(true);
+  }
+
+  // Loads the page's title/description/preview image so a saved link
+  // shows a real thumbnail instead of just a bare URL. Title only
+  // auto-fills if the user hasn't already typed one themselves. Runs
+  // automatically - on a short pause while typing and again on blur -
+  // there's no manual button to remember to press.
+  async function runPreview(rawUrl) {
+    const url = normalizeUrl(rawUrl);
+    if (!url) return;
+    setPreviewLoading(true);
+    setPreviewError('');
+    try {
+      const preview = await fetchLinkPreview(url);
+      setLinkDraft((d) => ({
+        ...d,
+        url,
+        title: d.title.trim() ? d.title : preview.title || d.title,
+        image: preview.image || d.image,
+        description: preview.description || d.description,
+      }));
+    } catch (e) {
+      setPreviewError(e && e.message ? e.message : "Couldn't load a preview for that link.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function onUrlChange(v) {
+    setLinkDraft((d) => ({ ...d, url: v }));
+    if (previewDebounce.current) clearTimeout(previewDebounce.current);
+    // A bit more than a comfortable pause between keystrokes - fires
+    // while the user is still mid-edit without hammering the network on
+    // every character.
+    previewDebounce.current = setTimeout(() => {
+      if (/\.[a-z]{2,}/i.test(v)) runPreview(v);
+    }, 700);
+  }
+
+  // Backfills a thumbnail for a link that's already saved without one -
+  // e.g. the auto-fetch failed the first time, or it predates this.
+  async function backfillPreview(link) {
+    setBackfillingId(link.id);
+    try {
+      const preview = await fetchLinkPreview(link.url);
+      if (preview.image || preview.description) {
+        setInfoLinks((prev) => ({
+          ...prev,
+          [linksOpenFor]: (prev[linksOpenFor] || []).map((l) =>
+            l.id === link.id
+              ? { ...l, image: preview.image || l.image, description: preview.description || l.description }
+              : l
+          ),
+        }));
+      } else {
+        Alert.alert('No preview found', "That page doesn't expose a preview image or description.");
+      }
+    } catch (e) {
+      Alert.alert("Couldn't fetch preview", e && e.message ? e.message : 'Try again later.');
+    } finally {
+      setBackfillingId(null);
+    }
   }
 
   function saveLink() {
@@ -122,6 +178,8 @@ export default function InformationScreen({
       title,
       url: normalizeUrl(url),
       notes: linkDraft.notes.trim(),
+      image: linkDraft.image || '',
+      description: linkDraft.description || '',
     };
     setInfoLinks((prev) => {
       const list = prev[linksOpenFor] || [];
@@ -132,7 +190,7 @@ export default function InformationScreen({
     });
     setLinkFormOpen(false);
     setEditingLinkId(null);
-    setLinkDraft({ title: '', url: '', notes: '' });
+    setLinkDraft({ title: '', url: '', notes: '', image: '', description: '' });
   }
 
   function deleteLink(id) {
@@ -142,194 +200,131 @@ export default function InformationScreen({
     }));
   }
 
-  function openLink(url) {
-    Linking.openURL(url).catch(() => Alert.alert("Couldn't open that link"));
-  }
-
-  const activeCategory = infoCategories.find((c) => c.id === linksOpenFor);
+  const activeCustomCategory = infoCategories.find((c) => c.id === linksOpenFor);
+  const activePermanentTile = PERMANENT_TILES.find((t) => t.id === linksOpenFor);
+  const activeCategory = activeCustomCategory || activePermanentTile;
   const activeLinks = infoLinks[linksOpenFor] || [];
 
-  return (
-    <View style={{ flex: 1 }}>
-      <ScrollView contentContainerStyle={shared.container}>
-        <Text style={shared.h1}>Information</Text>
-        <Text style={shared.tagline}>Recipes, places, and body — all in one spot</Text>
-
-        <View style={styles.grid}>
-          {PERMANENT_TILES.map((t) => (
-            <TouchableOpacity
-              key={t.id}
-              style={[styles.tile, { backgroundColor: t.color }]}
-              onPress={() => handleTilePress(t.id)}
-            >
-              <Text style={styles.tileIcon}>{t.icon}</Text>
-              <Text style={styles.tileName}>{t.name}</Text>
+  if (linksOpenFor) {
+    return (
+      <ScrollView style={shared.safe} contentContainerStyle={shared.container}>
+        <TouchableOpacity onPress={() => setLinksOpenFor(null)}>
+          <Text style={styles.backLink}>‹ Information</Text>
+        </TouchableOpacity>
+        <View style={styles.headerRow}>
+          <Text style={shared.h1}>{activeCategory?.name}</Text>
+          {activeCustomCategory ? (
+            <TouchableOpacity onPress={() => deleteCategory(linksOpenFor)}>
+              <Text style={styles.deleteCatText}>Delete category</Text>
             </TouchableOpacity>
-          ))}
-          {infoCategories.map((c) => (
-            <TouchableOpacity
-              key={c.id}
-              style={[styles.tile, { backgroundColor: c.color }]}
-              onPress={() => handleTilePress(c.id)}
-            >
-              <Text style={styles.tileIcon}>{c.icon}</Text>
-              <Text style={styles.tileName}>{c.name}</Text>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity style={styles.addTile} onPress={() => setModalOpen(true)}>
-            <Text style={{ fontSize: 24, color: DIM, marginBottom: 4 }}>+</Text>
-            <Text style={styles.addTileText}>Add Category</Text>
-          </TouchableOpacity>
+          ) : null}
         </View>
-      </ScrollView>
 
-      <Modal
-        visible={modalOpen}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setModalOpen(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>New Category</Text>
-            <Text style={styles.label}>Name</Text>
-            <TextInput
-              style={styles.input}
-              value={draft.name}
-              onChangeText={(v) => setDraft((d) => ({ ...d, name: v }))}
-              placeholder="e.g. Home Maintenance"
-              placeholderTextColor="#9aa5b1"
+        {activeLinks.length === 0 ? (
+          <Text style={[shared.tagline, { marginBottom: 12 }]}>No links saved here yet.</Text>
+        ) : (
+          activeLinks.map((l) => (
+            <LinkCard
+              key={l.id}
+              link={l}
+              onEdit={openLinkForm}
+              onDelete={deleteLink}
+              onBackfillPreview={backfillPreview}
+              backfilling={backfillingId === l.id}
             />
-            <Text style={styles.label}>Icon</Text>
-            <View style={styles.rowWrap}>
-              {ICON_CHOICES.map((ic) => (
-                <TouchableOpacity
-                  key={ic}
-                  style={[styles.iconBtn, draft.icon === ic && styles.iconBtnSel]}
-                  onPress={() => setDraft((d) => ({ ...d, icon: ic }))}
-                >
-                  <Text style={{ fontSize: 18 }}>{ic}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <Text style={styles.label}>Color</Text>
-            <View style={styles.rowWrap}>
-              {COLOR_CHOICES.map((c) => (
-                <TouchableOpacity
-                  key={c}
-                  style={[
-                    styles.colorDot,
-                    { backgroundColor: c },
-                    draft.color === c && styles.colorDotSel,
-                  ]}
-                  onPress={() => setDraft((d) => ({ ...d, color: c }))}
-                />
-              ))}
-            </View>
-            <TouchableOpacity style={styles.saveBtn} onPress={saveCategory}>
-              <Text style={styles.saveBtnText}>Add Category</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalOpen(false)}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+          ))
+        )}
 
-      <Modal
-        visible={!!linksOpenFor}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setLinksOpenFor(null)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeaderRow}>
-              <Text style={styles.sheetTitle}>{activeCategory?.name}</Text>
-              <TouchableOpacity onPress={() => deleteCategory(linksOpenFor)}>
-                <Text style={styles.deleteCatText}>Delete category</Text>
-              </TouchableOpacity>
-            </View>
-            <ScrollView style={{ maxHeight: 380 }}>
-              {activeLinks.length === 0 ? (
-                <Text style={[shared.tagline, { marginBottom: 12 }]}>
-                  No links saved here yet.
-                </Text>
-              ) : (
-                activeLinks.map((l) => (
-                  <View key={l.id} style={styles.linkRow}>
-                    <TouchableOpacity style={{ flex: 1 }} onPress={() => openLink(l.url)}>
-                      <Text style={styles.linkTitle}>{l.title}</Text>
-                      <Text style={styles.linkUrl} numberOfLines={1}>{l.url}</Text>
-                      {l.notes ? <Text style={styles.linkNotes}>{l.notes}</Text> : null}
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.linkAction} onPress={() => openLinkForm(l)}>
-                      <Text style={styles.linkActionText}>Edit</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.linkAction} onPress={() => deleteLink(l.id)}>
-                      <Text style={[styles.linkActionText, { color: ROSE }]}>Delete</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))
-              )}
-            </ScrollView>
-            <TouchableOpacity style={styles.saveBtn} onPress={() => openLinkForm(null)}>
-              <Text style={styles.saveBtnText}>+ Add Link</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setLinksOpenFor(null)}>
-              <Text style={styles.cancelBtnText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={linkFormOpen}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setLinkFormOpen(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>{editingLinkId ? 'Edit Link' : 'New Link'}</Text>
+        {linkFormOpen ? (
+          <View style={shared.block}>
+            <Text style={shared.blockTitle}>{editingLinkId ? 'Edit Link' : 'New Link'}</Text>
             <Text style={styles.label}>Title</Text>
             <TextInput
               style={styles.input}
               value={linkDraft.title}
               onChangeText={(v) => setLinkDraft((d) => ({ ...d, title: v }))}
               placeholder="e.g. Idleon Wiki"
-              placeholderTextColor="#9aa5b1"
+              placeholderTextColor={DIM}
             />
             <Text style={styles.label}>URL</Text>
-            <TextInput
-              style={styles.input}
-              value={linkDraft.url}
-              onChangeText={(v) => setLinkDraft((d) => ({ ...d, url: v }))}
-              placeholder="e.g. idleon.wiki.gg"
-              placeholderTextColor="#9aa5b1"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-            />
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TextInput
+                style={[styles.input, { flex: 1 }]}
+                value={linkDraft.url}
+                onChangeText={onUrlChange}
+                onBlur={() => runPreview(linkDraft.url)}
+                placeholder="e.g. idleon.wiki.gg"
+                placeholderTextColor={DIM}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+              />
+              {previewLoading ? <ActivityIndicator color={GOLD} size="small" style={{ marginLeft: 10 }} /> : null}
+            </View>
+            {previewError ? <Text style={styles.previewError}>{previewError}</Text> : null}
+            {linkDraft.image ? (
+              <View style={styles.previewCard}>
+                <Image source={{ uri: linkDraft.image }} style={styles.previewImage} />
+                {linkDraft.description ? (
+                  <Text style={styles.previewDescription} numberOfLines={3}>
+                    {linkDraft.description}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
             <Text style={styles.label}>Notes (optional)</Text>
             <TextInput
-              style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
+              style={[styles.input, { minHeight: 60, textAlignVertical: 'top' }]}
               value={linkDraft.notes}
               onChangeText={(v) => setLinkDraft((d) => ({ ...d, notes: v }))}
               placeholder="Anything worth remembering about this one"
-              placeholderTextColor="#9aa5b1"
+              placeholderTextColor={DIM}
               multiline
             />
             <TouchableOpacity style={styles.saveBtn} onPress={saveLink}>
               <Text style={styles.saveBtnText}>{editingLinkId ? 'Save Changes' : 'Add Link'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setLinkFormOpen(false)}>
-              <Text style={styles.cancelBtnText}>Cancel</Text>
+            <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setLinkFormOpen(false)}>
+              <Text style={{ color: DIM, fontSize: 13 }}>Cancel</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </Modal>
-    </View>
+        ) : (
+          <TouchableOpacity style={styles.saveBtn} onPress={() => openLinkForm(null)}>
+            <Text style={styles.saveBtnText}>+ Add Link</Text>
+          </TouchableOpacity>
+        )}
+      </ScrollView>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={shared.container}>
+      <Text style={shared.h1}>Information</Text>
+      <Text style={shared.tagline}>Recipes, places, and body — all in one spot</Text>
+
+      <View style={styles.grid}>
+        {PERMANENT_TILES.map((t) => (
+          <TouchableOpacity
+            key={t.id}
+            style={[styles.tile, { backgroundColor: t.color }]}
+            onPress={() => handleTilePress(t.id)}
+          >
+            <Text style={styles.tileIcon}>{t.icon}</Text>
+            <Text style={styles.tileName}>{t.name}</Text>
+          </TouchableOpacity>
+        ))}
+        {infoCategories.map((c) => (
+          <TouchableOpacity
+            key={c.id}
+            style={[styles.tile, { backgroundColor: c.color }]}
+            onPress={() => handleTilePress(c.id)}
+          >
+            <Text style={styles.tileIcon}>{c.icon}</Text>
+            <Text style={styles.tileName}>{c.name}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </ScrollView>
   );
 }
 
@@ -345,82 +340,38 @@ const styles = StyleSheet.create({
   },
   tileIcon: { fontSize: 30, marginBottom: 6 },
   tileName: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  addTile: {
-    width: '48%',
-    aspectRatio: 1.4,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: BORDER,
-    borderStyle: 'dashed',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
-  addTileText: { color: DIM, fontSize: 14, fontWeight: '600' },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    backgroundColor: CARD,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: 40,
-    maxHeight: '90%',
-  },
-  sheetTitle: { fontSize: 20, fontWeight: '700', color: INK, marginBottom: 12 },
-  sheetHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  deleteCatText: { color: ROSE, fontSize: 12, fontWeight: '600', marginBottom: 12 },
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER,
-  },
-  linkTitle: { color: INK, fontSize: 15, fontWeight: '700' },
-  linkUrl: { color: GOLD, fontSize: 12, marginTop: 2 },
-  linkNotes: { color: DIM, fontSize: 12, marginTop: 4 },
-  linkAction: { paddingHorizontal: 8, paddingVertical: 6 },
-  linkActionText: { color: DIM, fontSize: 12, fontWeight: '600' },
+  backLink: { color: GOLD, fontSize: 15, fontWeight: '700', marginBottom: 10 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  deleteCatText: { color: ROSE, fontSize: 12, fontWeight: '600' },
   label: { fontSize: 12, fontWeight: '600', color: DIM, marginTop: 12, marginBottom: 6 },
+  previewError: { color: ROSE, fontSize: 12, marginTop: 6 },
+  previewCard: {
+    marginTop: 10,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  previewImage: { width: '100%', height: 130, backgroundColor: '#14100c' },
+  previewDescription: { color: DIM, fontSize: 12, padding: 10, lineHeight: 16 },
   input: {
-    backgroundColor: '#232d3a',
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 15,
     color: INK,
   },
-  rowWrap: { flexDirection: 'row', flexWrap: 'wrap' },
-  iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#232d3a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 8,
-    marginBottom: 8,
-  },
-  iconBtnSel: { backgroundColor: '#332a13', borderWidth: 2, borderColor: GOLD },
-  colorDot: { width: 34, height: 34, borderRadius: 17, marginRight: 10, marginBottom: 10 },
-  colorDotSel: { borderWidth: 3, borderColor: INK },
   saveBtn: {
     backgroundColor: GOLD,
     borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: 16,
+    marginBottom: 20,
   },
-  saveBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  cancelBtn: { paddingVertical: 10, alignItems: 'center', marginTop: 8 },
-  cancelBtnText: { color: DIM, fontSize: 14 },
+  saveBtnText: { color: '#1c1206', fontSize: 16, fontWeight: '700' },
 });
-

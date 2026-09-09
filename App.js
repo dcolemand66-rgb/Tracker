@@ -31,6 +31,7 @@ import RoadmapsScreen from './RoadmapsScreen';
 import PlacesScreen from './PlacesScreen';
 import BuylistScreen from './BuylistScreen';
 import TrackerScreen from './TrackerScreen';
+import PriorityScreen from './PriorityScreen';
 import RecipesScreen from './RecipesScreen';
 import SavingsScreen from './SavingsScreen';
 import InformationScreen from './InformationScreen';
@@ -38,6 +39,8 @@ import RestaurantsScreen from './RestaurantsScreen';
 import SettingsScreen from './SettingsScreen';
 import TravelScreen from './TravelScreen';
 import HabitsDetailScreen from './HabitsDetailScreen';
+import SideQuestsScreen from './SideQuestsScreen';
+import IdleonTrackerScreen from './IdleonTrackerScreen';
 import { ensureNotificationPermissions, resyncAllHabitNotifications } from './notifications';
 import { GOLD, INK, DIM, CARD, BORDER, BLUE, ROSE, glowRose } from './theme';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
@@ -46,8 +49,21 @@ import { migrateBase64PhotosToFiles, convertBase64PhotosToFilesInPlace } from '.
 
 const STORAGE_KEY = 'tracker_expo_data_v12';
 
+// Chess is a purpose-built habit with its own "tap to start" session
+// screen (board + lessons), same as Reading/Self Care/Cardistry/Workout -
+// that only works when sessionType is 'chess'. Older data (or a payload
+// restored from before this was wired up) can have a Chess habit missing
+// that field, which makes Calendar fall back to a plain manual checkbox
+// instead. Normalize it on every load so it's never stuck that way.
+function normalizeHabits(list) {
+  return (list || []).map((h) =>
+    h.text === 'Chess' && h.sessionType !== 'chess' ? { ...h, sessionType: 'chess' } : h
+  );
+}
+
 const NAV_ITEMS = [
   { key: 'tracker', label: 'Tracker', icon: '🎬' },
+  { key: 'priority', label: 'Priority', icon: '🎯' },
   { key: 'roadmaps', label: 'Roadmaps', icon: '🚩' },
   { key: 'buylist', label: 'Buylist', icon: '🛍️' },
   { key: 'habits', label: 'Habits', icon: '🔥' },
@@ -59,6 +75,7 @@ const NAV_ITEMS = [
 
 const TAB_LABELS = {
   tracker: 'Tracker',
+  priority: 'Priority',
   roadmaps: 'Roadmaps',
   buylist: 'Buylist',
   information: 'Information',
@@ -71,6 +88,8 @@ const TAB_LABELS = {
   restaurants: 'Restaurants',
   settings: 'Settings',
   habits: 'Habits',
+  sidequests: 'Side Quests',
+  'idleon-tracker': 'Idleon',
 };
 
 const DRAWER_WIDTH = 280;
@@ -109,6 +128,10 @@ function MainApp() {
   // structured goal cards with tasks/lessons, this is meant to be a much
   // lower-friction "things I'm into" list you can jot down and check off.
   const [sideQuests, setSideQuests] = useState([]);
+  // Data for Side Quests entries that are full trackers (categories +
+  // items) rather than a simple checklist line - keyed by trackerId, e.g.
+  // idleonTracker for the 'idleon' entry.
+  const [idleonTracker, setIdleonTracker] = useState({ categories: [], links: [] });
   const [farmingProgress, setFarmingProgress] = useState({});
   const [pendingHabitId, setPendingHabitId] = useState(null);
   const [saveError, setSaveError] = useState(null);
@@ -230,6 +253,7 @@ function MainApp() {
       customColors,
       trips,
       sideQuests,
+      idleonTracker,
       farmingProgress,
       calendarViewMode,
       meditationSettings,
@@ -270,12 +294,13 @@ function MainApp() {
     setInfoCategories(p.infoCategories || []);
     setInfoLinks(p.infoLinks || {});
     setIngredientLinkMemory(p.ingredientLinkMemory || {});
-    setHabits(p.habits || []);
+    setHabits(normalizeHabits(p.habits || []));
     setHero(p.hero || { weaponTier: 0, armorTier: 0, energy: 0, minionsDefeated: 0 });
     setGoogleUser(p.googleUser || null);
     setCustomColors(p.customColors || []);
     setTrips(p.trips || []);
     setSideQuests(p.sideQuests || []);
+    setIdleonTracker(p.idleonTracker || { categories: [], links: [] });
     setFarmingProgress(p.farmingProgress || {});
     setCalendarViewMode(p.calendarViewMode || 'agenda');
     setMeditationSettings(p.meditationSettings || { breathCount: 5, tempoId: 'medium', totalRounds: 1, soundOn: true });
@@ -319,7 +344,7 @@ function MainApp() {
         setRewardItems(saved.rewardItems || []);
         setRewardHistory(saved.rewardHistory || []);
         setTodoItems(saved.todoItems || []);
-        setHabits(saved.habits || []);
+        setHabits(normalizeHabits(saved.habits || []));
         setHero(saved.hero || { weaponTier: 0, armorTier: 0, energy: 0, minionsDefeated: 0 });
         setGoogleUser(saved.googleUser || null);
         setCustomColors(saved.customColors || []);
@@ -335,29 +360,165 @@ function MainApp() {
         setBodyRoutines(saved.bodyRoutines || []);
         setBodyInventory(saved.bodyInventory || []);
         setBodyExercises(saved.bodyExercises || []);
-        // Idleon and Soul-Arena were asked for by name as the first two
-        // manually-tracked Information categories — seeded once here if
-        // they aren't already present (e.g. a fresh install), and never
-        // re-added if the user later deletes one on purpose.
+        // Idleon and Soul-Arena used to be seeded as Information
+        // categories. They've moved to live as Side Quests entries
+        // instead — this one-time migration pulls them (seeded or
+        // user-created, by name) out of Information and drops them into
+        // Side Quests, and seeds them there directly on a fresh install.
+        // Never re-added afterward, even if the user later deletes one.
+        //
+        // NOTE: an earlier version of this migration deleted whatever
+        // links had been saved under the old Idleon/Soul-Arena categories
+        // instead of carrying them forward - anyone who already ran that
+        // version lost those links for good, since the flag below means
+        // it never runs a second time. Fixed here so it doesn't happen
+        // again: Idleon's old links are now folded into its tracker's
+        // Links section below instead of being discarded.
         const existingCats = saved.infoCategories || [];
-        const seedFlagKey = 'tracker_info_categories_seeded_v1';
-        const alreadySeeded = await AsyncStorage.getItem(seedFlagKey);
+        const existingLinks = saved.infoLinks || {};
+        const existingSideQuests = saved.sideQuests || [];
+        const migrateFlagKey = 'tracker_idleon_soularena_to_sidequests_v1';
+        const alreadyMigrated = await AsyncStorage.getItem(migrateFlagKey);
         let catsToUse = existingCats;
-        if (!alreadySeeded) {
-          const haveIdleon = existingCats.some((c) => (c.name || '').toLowerCase() === 'idleon');
-          const haveSoulArena = existingCats.some((c) => (c.name || '').toLowerCase() === 'soul-arena');
-          const seeded = [];
-          if (!haveIdleon) {
-            seeded.push({ id: 'ic_idleon_seed', name: 'Idleon', icon: '🎮', color: '#4a7ba6' });
+        let linksToUse = existingLinks;
+        let questsToUse = existingSideQuests;
+        let idleonLinksToMigrate = [];
+        if (!alreadyMigrated) {
+          const isIdleonOrSoulArena = (c) => {
+            const n = (c.name || '').toLowerCase();
+            return n === 'idleon' || n === 'soul-arena';
+          };
+          const toMigrate = existingCats.filter(isIdleonOrSoulArena);
+          const haveQuestText = (t) =>
+            existingSideQuests.some((q) => (q.text || '').toLowerCase() === t.toLowerCase());
+          if (toMigrate.length) {
+            catsToUse = existingCats.filter((c) => !isIdleonOrSoulArena(c));
+            linksToUse = { ...existingLinks };
+            toMigrate.forEach((c) => {
+              if ((c.name || '').toLowerCase() === 'idleon' && Array.isArray(linksToUse[c.id])) {
+                idleonLinksToMigrate = [...idleonLinksToMigrate, ...linksToUse[c.id]];
+              }
+              delete linksToUse[c.id];
+            });
+            const migratedQuests = toMigrate
+              .filter((c) => !haveQuestText(c.name))
+              .map((c, i) => ({
+                id: 'sq_migrated_' + c.id + '_' + i,
+                text: c.name,
+                done: false,
+                addedAt: Date.now(),
+              }));
+            questsToUse = [...existingSideQuests, ...migratedQuests];
+          } else {
+            const seeded = [];
+            if (!haveQuestText('Idleon')) {
+              seeded.push({ id: 'sq_idleon_seed', text: 'Idleon', done: false, addedAt: Date.now() });
+            }
+            if (!haveQuestText('Soul-Arena')) {
+              seeded.push({ id: 'sq_soularena_seed', text: 'Soul-Arena', done: false, addedAt: Date.now() });
+            }
+            if (seeded.length) questsToUse = [...existingSideQuests, ...seeded];
           }
-          if (!haveSoulArena) {
-            seeded.push({ id: 'ic_soularena_seed', name: 'Soul-Arena', icon: '⚔️', color: '#7b6ca6' });
-          }
-          if (seeded.length) catsToUse = [...existingCats, ...seeded];
-          await AsyncStorage.setItem(seedFlagKey, '1');
+          await AsyncStorage.setItem(migrateFlagKey, '1');
         }
+        // Idleon's Side Quests entry now opens its own tracker page
+        // instead of just toggling done/not-done — normalize whichever
+        // entry is "Idleon" (seeded, migrated, or user-added) to that
+        // type. Cheap and idempotent, so it just runs on every load
+        // rather than needing its own one-time flag.
+        questsToUse = questsToUse.map((q) =>
+          q.type === 'tracker'
+            ? q
+            : (q.text || '').toLowerCase() === 'idleon'
+            ? { ...q, type: 'tracker', trackerId: 'idleon' }
+            : q
+        );
         setInfoCategories(catsToUse);
-        setInfoLinks(saved.infoLinks || {});
+        setInfoLinks(linksToUse);
+        setSideQuests(questsToUse);
+
+        // Build the Idleon tracker's saved state, carrying forward any
+        // links rescued above, and seeding the account link once (never
+        // re-added if the user later deletes it).
+        let idleonTrackerToUse = saved.idleonTracker || { categories: [], links: [] };
+        if (!Array.isArray(idleonTrackerToUse.links)) idleonTrackerToUse = { ...idleonTrackerToUse, links: [] };
+        if (idleonLinksToMigrate.length) {
+          const haveUrl = (u) => idleonTrackerToUse.links.some((l) => l.url === u);
+          const toAdd = idleonLinksToMigrate.filter((l) => !haveUrl(l.url));
+          if (toAdd.length) {
+            idleonTrackerToUse = { ...idleonTrackerToUse, links: [...idleonTrackerToUse.links, ...toAdd] };
+          }
+        }
+        const accountLinkFlagKey = 'tracker_idleon_account_link_seeded_v1';
+        const accountLinkSeeded = await AsyncStorage.getItem(accountLinkFlagKey);
+        if (!accountLinkSeeded) {
+          const accountUrl = 'https://demarcus1234.idleonefficiency.com';
+          const haveAccountUrl = idleonTrackerToUse.links.some((l) => l.url === accountUrl);
+          if (!haveAccountUrl) {
+            idleonTrackerToUse = {
+              ...idleonTrackerToUse,
+              links: [
+                ...idleonTrackerToUse.links,
+                {
+                  id: 'il_account_seed',
+                  title: 'My Idleon Efficiency Profile',
+                  url: accountUrl,
+                  notes: '',
+                  image: '',
+                  description: '',
+                },
+              ],
+            };
+          }
+          await AsyncStorage.setItem(accountLinkFlagKey, '1');
+        }
+
+        // Seeds the checklist categories to match Idleon Efficiency's own
+        // section structure (Worlds 1-7, Master Classes, Account Wide) so
+        // there's a real starting scaffold instead of a blank page. Only
+        // runs once, and only if no categories exist yet, so it never
+        // overwrites categories the user already built out themselves.
+        const categoriesSeedFlagKey = 'tracker_idleon_categories_seeded_v1';
+        const categoriesSeeded = await AsyncStorage.getItem(categoriesSeedFlagKey);
+        if (!categoriesSeeded) {
+          if (!idleonTrackerToUse.categories || idleonTrackerToUse.categories.length === 0) {
+            const worldCats = [1, 2, 3, 4, 5, 6, 7].map((n) => ({
+              id: `ic_world${n}_seed`,
+              name: `World ${n}`,
+              items: [],
+            }));
+            idleonTrackerToUse = {
+              ...idleonTrackerToUse,
+              categories: [
+                ...worldCats,
+                { id: 'ic_masterclasses_seed', name: 'Master Classes', items: [] },
+                {
+                  id: 'ic_accountwide_seed',
+                  name: 'Account Wide',
+                  items: [
+                    'Sailing',
+                    'Farming',
+                    'Construction',
+                    'Gaming (Arcade)',
+                    'Alchemy',
+                    'Cooking',
+                    'Sneaking',
+                    'Worship',
+                    'Summoning',
+                    'Post Office',
+                  ].map((name, i) => ({
+                    id: `ii_accountwide_seed_${i}`,
+                    name,
+                    status: 'todo',
+                    note: '',
+                  })),
+                },
+              ],
+            };
+          }
+          await AsyncStorage.setItem(categoriesSeedFlagKey, '1');
+        }
+        setIdleonTracker(idleonTrackerToUse);
         setIngredientLinkMemory(saved.ingredientLinkMemory || {});
         // Only reached when the load genuinely succeeded, so this is the
         // only place saving gets enabled.
@@ -494,6 +655,7 @@ function MainApp() {
       customColors,
       trips,
       sideQuests,
+      idleonTracker,
       farmingProgress,
       calendarViewMode,
       meditationSettings,
@@ -568,6 +730,8 @@ function MainApp() {
     googleUser,
     customColors,
     trips,
+    sideQuests,
+    idleonTracker,
     farmingProgress,
     calendarViewMode,
     meditationSettings,
@@ -665,8 +829,22 @@ function MainApp() {
               setPendingHabitId(id);
               setTab('habits');
             }}
+            onOpenSideQuests={() => setTab('sidequests')}
+          />
+        )}
+        {tab === 'sidequests' && (
+          <SideQuestsScreen
             sideQuests={sideQuests}
             setSideQuests={setSideQuests}
+            onBack={() => setTab('calendar')}
+            onOpenTracker={(trackerId) => setTab(trackerId === 'idleon' ? 'idleon-tracker' : 'sidequests')}
+          />
+        )}
+        {tab === 'idleon-tracker' && (
+          <IdleonTrackerScreen
+            tracker={idleonTracker}
+            setTracker={setIdleonTracker}
+            onBack={() => setTab('sidequests')}
           />
         )}
         {tab === 'roadmaps' && (
@@ -719,6 +897,18 @@ function MainApp() {
             categories={categories}
             setCategories={setCategories}
             initialFilter={trackerFilter}
+          />
+        )}
+        {tab === 'priority' && (
+          <PriorityScreen
+            habits={habits}
+            items={items}
+            categories={categories}
+            onOpenHabit={(id) => {
+              setPendingHabitId(id);
+              setTab('habits');
+            }}
+            onOpenTrackerItem={() => setTab('tracker')}
           />
         )}
         {tab === 'recipes' && (
@@ -1044,5 +1234,3 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 });
-
-

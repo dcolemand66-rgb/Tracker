@@ -34,6 +34,7 @@ import MeditationSession, {
   DAYS_PER_LEVEL,
 } from './MeditationSession';
 import { setPhoneAlarmForHabit, openPhoneClock, canSetPhoneAlarm } from './phoneAlarm';
+import { defaultGrowth, currentGrowthTarget, completionsUntilNextStep, completionsSinceStart, logGrowthFeel, hasLoggedFeelToday } from './growthMath';
 import SelfCareSession from './SelfCareSession';
 import BookShelf from './BookShelf';
 import { bookProgressPct } from './bookUtils';
@@ -107,6 +108,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [pendingAdvance, setPendingAdvance] = useState(null);
   const [openRankId, setOpenRankId] = useState(null);
+  const [growthFormOpen, setGrowthFormOpen] = useState(false);
+  const [growthDraft, setGrowthDraft] = useState({ startValue: '10', amount: '2', everyDays: '3', unit: 'reps' });
   const [openTechId, setOpenTechId] = useState(null);
   const [practiceTech, setPracticeTech] = useState(null); // { habit, technique } or null
 
@@ -147,11 +150,25 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
         doneDates: {},
         addedAt: Date.now(),
         linkedContent: null,
+        sessionType: 'chess',
         scheduledNotifications: [],
       },
     ]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Migration: Chess was originally seeded without sessionType, which is
+  // what the Calendar screen uses to decide between a plain checkbox and
+  // the "tap to start" session treatment every other purpose-built habit
+  // gets. Any Chess habit created before this fix gets it filled in here.
+  useEffect(() => {
+    const stale = habits.find((h) => h.text === 'Chess' && h.sessionType !== 'chess');
+    if (!stale) return;
+    setHabits((prev) =>
+      prev.map((h) => (h.id === stale.id ? { ...h, sessionType: 'chess' } : h))
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [habits]);
 
   // Migration: earlier versions of this habit auto-linked a YouTube
   // playlist. If that already happened before this update, clear it so
@@ -417,6 +434,59 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
     setLinkUrl('');
     setLinkError('');
     setLinkOpen(true);
+  }
+
+  // Growing target - a numeric target (reps, minutes, pages...) that
+  // climbs as the habit actually gets completed (its own real doneDates,
+  // the same data the streak is built from), with the pace adjustable
+  // by how it actually felt. Available on any habit, not just
+  // workout-type ones, and each habit gets its own suggested starting
+  // shape based on what it's called.
+  function setHabitGrowth(habit, updater) {
+    setHabits((prev) =>
+      prev.map((h) => (h.id === habit.id ? { ...h, growth: updater(h.growth || defaultGrowth(h.text)) } : h))
+    );
+  }
+
+  function toggleGrowth(habit) {
+    setHabitGrowth(habit, (g) =>
+      g.enabled
+        ? { ...g, enabled: false }
+        : { ...defaultGrowth(habit.text), ...g, enabled: true, startedAt: g.startedAt || Date.now() }
+    );
+  }
+
+  function openGrowthForm(habit) {
+    const g = habit.growth && habit.growth.startValue != null ? habit.growth : defaultGrowth(habit.text);
+    setGrowthDraft({
+      startValue: String(g.startValue),
+      amount: String(g.amount),
+      everyDays: String(g.everyDays),
+      unit: g.unit,
+    });
+    setGrowthFormOpen(true);
+  }
+
+  function saveGrowthSettings(habit) {
+    const startValue = Math.max(0, Number(growthDraft.startValue) || 0);
+    const amount = Math.max(0, Number(growthDraft.amount) || 0);
+    const everyDays = Math.max(1, Number(growthDraft.everyDays) || 1);
+    const unit = growthDraft.unit.trim() || 'reps';
+    setHabitGrowth(habit, (g) => ({
+      ...g,
+      enabled: true,
+      startValue,
+      amount,
+      everyDays,
+      unit,
+      startedAt: g.startedAt || Date.now(),
+    }));
+    setGrowthFormOpen(false);
+  }
+
+  function logFeel(habit, feel) {
+    const completions = completionsSinceStart(habit, habit.growth);
+    setHabitGrowth(habit, (g) => logGrowthFeel(g, feel, todayDateKey(), completions));
   }
 
   async function fetchAndLink() {
@@ -746,6 +816,140 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                       }
                     }}
                   />
+                ) : null}
+
+                <Text style={[styles.label, { marginTop: 20 }]}>Growing Target</Text>
+                {(() => {
+                  const growth = detailHabit.growth;
+                  const isOn = growth && growth.enabled;
+                  if (!isOn) {
+                    return (
+                      <>
+                        <Text style={shared.tagline}>
+                          Instead of a fixed goal, let the target climb as you actually complete
+                          this habit — e.g. pushups starting at 10, +2 every 3 times you do it —
+                          and nudge the pace up or down by how it actually felt.
+                        </Text>
+                        <TouchableOpacity style={styles.watchBtn} onPress={() => toggleGrowth(detailHabit)}>
+                          <Text style={styles.watchBtnText}>⚡ Turn On (Auto)</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => openGrowthForm(detailHabit)} style={{ alignItems: 'center', paddingVertical: 10 }}>
+                          <Text style={{ color: DIM, fontSize: 12 }}>Customize first</Text>
+                        </TouchableOpacity>
+                      </>
+                    );
+                  }
+                  const completions = completionsSinceStart(detailHabit, growth);
+                  const target = currentGrowthTarget(growth, completions);
+                  const nextIn = completionsUntilNextStep(growth, completions);
+                  const loggedToday = hasLoggedFeelToday(growth, todayDateKey());
+                  return (
+                    <>
+                      <View style={styles.currentVideoCard}>
+                        <Text style={styles.currentVideoLabel}>TODAY'S TARGET</Text>
+                        <Text style={styles.currentVideoTitle}>
+                          {target} {growth.unit}
+                        </Text>
+                        <Text style={styles.rankBlurb}>
+                          +{growth.amount} every {growth.everyDays} completion{growth.everyDays === 1 ? '' : 's'} —
+                          next step after {nextIn} more
+                        </Text>
+                      </View>
+                      {loggedToday ? (
+                        <Text style={styles.readingLinkNote}>Logged how today felt — pace updates from here.</Text>
+                      ) : (
+                        <>
+                          <Text style={[styles.label, { marginTop: 12 }]}>How did today feel?</Text>
+                          <View style={{ flexDirection: 'row' }}>
+                            <TouchableOpacity
+                              style={styles.feelBtn}
+                              onPress={() => logFeel(detailHabit, 'easy')}
+                            >
+                              <Text style={styles.feelBtnText}>Too Easy</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.feelBtn}
+                              onPress={() => logFeel(detailHabit, 'ok')}
+                            >
+                              <Text style={styles.feelBtnText}>Just Right</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.feelBtn}
+                              onPress={() => logFeel(detailHabit, 'hard')}
+                            >
+                              <Text style={styles.feelBtnText}>Too Hard</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </>
+                      )}
+                      {(growth.log || []).length ? (
+                        <>
+                          <Text style={[styles.label, { marginTop: 16 }]}>Recent</Text>
+                          {growth.log.slice(0, 5).map((e, i) => (
+                            <View key={i} style={styles.historyRow}>
+                              <Text style={styles.historyDate}>{e.date}</Text>
+                              <Text style={styles.historySeconds}>
+                                {e.target} {growth.unit} · {e.feel === 'easy' ? 'Too Easy' : e.feel === 'hard' ? 'Too Hard' : 'Just Right'}
+                              </Text>
+                            </View>
+                          ))}
+                        </>
+                      ) : null}
+                      <View style={{ flexDirection: 'row', marginTop: 12 }}>
+                        <TouchableOpacity onPress={() => openGrowthForm(detailHabit)} style={{ marginRight: 20 }}>
+                          <Text style={styles.clearTimeBtnText}>Edit growth settings</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => toggleGrowth(detailHabit)}>
+                          <Text style={[styles.clearTimeBtnText, { color: ROSE }]}>Turn off</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </>
+                  );
+                })()}
+                {growthFormOpen ? (
+                  <View style={styles.growthFormCard}>
+                    <Text style={styles.label}>Starting value</Text>
+                    <TextInput
+                      style={styles.growthInput}
+                      value={growthDraft.startValue}
+                      onChangeText={(v) => setGrowthDraft((d) => ({ ...d, startValue: v }))}
+                      keyboardType="numeric"
+                      placeholder="10"
+                      placeholderTextColor={DIM}
+                    />
+                    <Text style={styles.label}>Grows by</Text>
+                    <TextInput
+                      style={styles.growthInput}
+                      value={growthDraft.amount}
+                      onChangeText={(v) => setGrowthDraft((d) => ({ ...d, amount: v }))}
+                      keyboardType="numeric"
+                      placeholder="2"
+                      placeholderTextColor={DIM}
+                    />
+                    <Text style={styles.label}>Every X days</Text>
+                    <TextInput
+                      style={styles.growthInput}
+                      value={growthDraft.everyDays}
+                      onChangeText={(v) => setGrowthDraft((d) => ({ ...d, everyDays: v }))}
+                      keyboardType="numeric"
+                      placeholder="3"
+                      placeholderTextColor={DIM}
+                    />
+                    <Text style={styles.label}>Unit</Text>
+                    <TextInput
+                      style={styles.growthInput}
+                      value={growthDraft.unit}
+                      onChangeText={(v) => setGrowthDraft((d) => ({ ...d, unit: v }))}
+                      placeholder="reps, minutes, pages..."
+                      placeholderTextColor={DIM}
+                    />
+                    <TouchableOpacity style={styles.watchBtn} onPress={() => saveGrowthSettings(detailHabit)}>
+                      <Text style={styles.watchBtnText}>Save</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setGrowthFormOpen(false)}>
+                      <Text style={{ color: DIM, fontSize: 13 }}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
                 ) : null}
 
                 {detailHabit.linkedContent || detailHabit.sessionType === 'breathing' || detailHabit.sessionType === 'workout' || detailHabit.sessionType === 'selfcare' || detailHabit.sessionType === 'reading' ? (
@@ -1569,6 +1773,29 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
 }
 
 const styles = StyleSheet.create({
+  feelBtn: {
+    flex: 1,
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingVertical: 10,
+    marginRight: 8,
+    alignItems: 'center',
+  },
+  feelBtnText: { color: INK, fontSize: 12, fontWeight: '700' },
+  growthFormCard: { marginTop: 12, marginBottom: 8 },
+  growthInput: {
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: INK,
+    marginBottom: 10,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

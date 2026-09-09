@@ -39,6 +39,7 @@ export default function TrackerCard({
   onManageProgress,
   onAdjustEpisode,
   onAdjustGamePercent,
+  etaLabel,
 }) {
   const [flipped, setFlipped] = useState(false);
   const anim = useRef(new Animated.Value(0)).current;
@@ -220,6 +221,7 @@ export default function TrackerCard({
                     style={[styles.barFill, { width: `${item.gamePercent || 0}%` }]}
                   />
                 </View>
+                {etaLabel ? <Text style={styles.etaText}>⚡ {etaLabel}</Text> : null}
                 <View style={styles.stepperRow}>
                   <TouchableOpacity
                     style={[styles.stepBtn, { borderColor: color }]}
@@ -250,6 +252,7 @@ export default function TrackerCard({
                   />
                 </View>
                 <Text style={styles.detailText}>{epPct}% {isManga ? 'read' : 'watched'}</Text>
+                {etaLabel ? <Text style={styles.etaText}>⚡ {etaLabel}</Text> : null}
                 <View style={styles.stepperRow}>
                   <TouchableOpacity
                     style={[styles.stepBtn, { borderColor: color }]}
@@ -388,6 +391,7 @@ const styles = StyleSheet.create({
   statusIcon: { fontSize: 18, marginBottom: 2 },
   statusText: { color: INK, fontSize: 14, fontWeight: '800' },
   detailText: { color: DIM, fontSize: 11.5, marginTop: 2, lineHeight: 15 },
+  etaText: { color: '#d9a441', fontSize: 11.5, marginTop: 4, fontWeight: '700' },
   barTrack: {
     alignSelf: 'stretch',
     height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.1)',
@@ -415,4 +419,3 @@ const styles = StyleSheet.create({
   },
   actionChipText: { color: '#8fc4e8', fontSize: 11, fontWeight: '700' },
 });
-

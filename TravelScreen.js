@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ScrollView,
   View,
@@ -10,10 +10,13 @@ import {
   StyleSheet,
   Alert,
   Linking,
+  ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 import { pickCompressedImage } from './imagePicker';
+import { fetchLinkPreview } from './linkPreview';
+import LinkCard from './LinkCard';
 
 function makeId(p = 'tr') {
   return p + Date.now() + Math.random().toString(36).slice(2, 8);
@@ -144,6 +147,134 @@ export default function TravelScreen({ trips, setTrips }) {
     setTrips((prev) =>
       (prev || []).map((t) => (t.id === openTripId ? { ...t, notes: notesDraft } : t))
     );
+  }
+
+  // Trip Links - a place to save the trip's own reference sites (airline
+  // check-in, hotel booking page, visa/embassy info) separate from the
+  // priced Flights/Stays/etc listings above.
+  const tripLinks = trip ? trip.links || [] : [];
+  const [linkFormOpen, setLinkFormOpen] = useState(false);
+  const [editingLinkId, setEditingLinkId] = useState(null);
+  const [linkDraft, setLinkDraft] = useState({ title: '', url: '', notes: '', image: '', description: '' });
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const [backfillingLinkId, setBackfillingLinkId] = useState(null);
+  const previewDebounce = useRef(null);
+
+  function normalizeLinkUrl(raw) {
+    const v = (raw || '').trim();
+    if (!v) return '';
+    if (/^https?:\/\//i.test(v)) return v;
+    return 'https://' + v;
+  }
+
+  function openLinkForm(existing) {
+    setPreviewError('');
+    if (existing) {
+      setEditingLinkId(existing.id);
+      setLinkDraft({
+        title: existing.title,
+        url: existing.url,
+        notes: existing.notes || '',
+        image: existing.image || '',
+        description: existing.description || '',
+      });
+    } else {
+      setEditingLinkId(null);
+      setLinkDraft({ title: '', url: '', notes: '', image: '', description: '' });
+    }
+    setLinkFormOpen(true);
+  }
+
+  async function runLinkPreview(rawUrl) {
+    const url = normalizeLinkUrl(rawUrl);
+    if (!url) return;
+    setPreviewLoading(true);
+    setPreviewError('');
+    try {
+      const preview = await fetchLinkPreview(url);
+      setLinkDraft((d) => ({
+        ...d,
+        url,
+        title: d.title.trim() ? d.title : preview.title || d.title,
+        image: preview.image || d.image,
+        description: preview.description || d.description,
+      }));
+    } catch (e) {
+      setPreviewError(e && e.message ? e.message : "Couldn't load a preview for that link.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  function onLinkUrlChange(v) {
+    setLinkDraft((d) => ({ ...d, url: v }));
+    if (previewDebounce.current) clearTimeout(previewDebounce.current);
+    previewDebounce.current = setTimeout(() => {
+      if (/\.[a-z]{2,}/i.test(v)) runLinkPreview(v);
+    }, 700);
+  }
+
+  function saveTripLink() {
+    const title = linkDraft.title.trim();
+    const url = normalizeLinkUrl(linkDraft.url);
+    if (!title || !url) {
+      Alert.alert('Title and link required', 'Give this entry a title and a URL.');
+      return;
+    }
+    const entry = {
+      id: editingLinkId || makeId('lk'),
+      title,
+      url,
+      notes: linkDraft.notes.trim(),
+      image: linkDraft.image || '',
+      description: linkDraft.description || '',
+    };
+    setTrips((prev) =>
+      (prev || []).map((t) => {
+        if (t.id !== openTripId) return t;
+        const list = t.links || [];
+        const next = editingLinkId ? list.map((l) => (l.id === editingLinkId ? entry : l)) : [...list, entry];
+        return { ...t, links: next };
+      })
+    );
+    setLinkFormOpen(false);
+    setEditingLinkId(null);
+  }
+
+  function deleteTripLink(id) {
+    setTrips((prev) =>
+      (prev || []).map((t) => (t.id === openTripId ? { ...t, links: (t.links || []).filter((l) => l.id !== id) } : t))
+    );
+  }
+
+  async function backfillTripLinkPreview(link) {
+    setBackfillingLinkId(link.id);
+    try {
+      const preview = await fetchLinkPreview(link.url);
+      if (preview.image || preview.description) {
+        setTrips((prev) =>
+          (prev || []).map((t) =>
+            t.id !== openTripId
+              ? t
+              : {
+                  ...t,
+                  links: (t.links || []).map((l) =>
+                    l.id === link.id
+                      ? { ...l, image: preview.image || l.image, description: preview.description || l.description }
+                      : l
+                  ),
+                }
+          )
+        );
+      } else {
+        Alert.alert('No preview found', "That page doesn't expose a preview image or description.");
+      }
+    } catch (e) {
+      Alert.alert("Couldn't fetch preview", e && e.message ? e.message : 'Try again later.');
+    } finally {
+      setBackfillingLinkId(null);
+    }
   }
 
   useEffect(() => {
@@ -705,6 +836,85 @@ export default function TravelScreen({ trips, setTrips }) {
             })
           )}
         </View>
+
+        {/* Trip Links */}
+        <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
+          <View style={shared.blockHead}>
+            <Text style={shared.blockTitle}>Links</Text>
+          </View>
+          {tripLinks.length === 0 ? (
+            <Text style={[shared.tagline, { marginBottom: 8 }]}>
+              Save airline check-in, hotel booking, or visa/embassy pages for this trip.
+            </Text>
+          ) : (
+            tripLinks.map((l) => (
+              <LinkCard
+                key={l.id}
+                link={l}
+                onEdit={openLinkForm}
+                onDelete={deleteTripLink}
+                onBackfillPreview={backfillTripLinkPreview}
+                backfilling={backfillingLinkId === l.id}
+              />
+            ))
+          )}
+
+          {linkFormOpen ? (
+            <View style={styles.linkFormCard}>
+              <Text style={styles.linkFormLabel}>Title</Text>
+              <TextInput
+                style={styles.linkFormInput}
+                value={linkDraft.title}
+                onChangeText={(v) => setLinkDraft((d) => ({ ...d, title: v }))}
+                placeholder="e.g. Delta Check-in"
+                placeholderTextColor={DIM}
+              />
+              <Text style={styles.linkFormLabel}>URL</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <TextInput
+                  style={[styles.linkFormInput, { flex: 1 }]}
+                  value={linkDraft.url}
+                  onChangeText={onLinkUrlChange}
+                  onBlur={() => runLinkPreview(linkDraft.url)}
+                  placeholder="e.g. delta.com/checkin"
+                  placeholderTextColor={DIM}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+                {previewLoading ? <ActivityIndicator color={GOLD} size="small" style={{ marginLeft: 10 }} /> : null}
+              </View>
+              {previewError ? <Text style={styles.linkFormError}>{previewError}</Text> : null}
+              {linkDraft.image ? (
+                <View style={styles.linkPreviewCard}>
+                  <Image source={{ uri: linkDraft.image }} style={styles.linkPreviewImage} />
+                  {linkDraft.description ? (
+                    <Text style={styles.linkPreviewDescription} numberOfLines={3}>{linkDraft.description}</Text>
+                  ) : null}
+                </View>
+              ) : null}
+              <Text style={styles.linkFormLabel}>Notes (optional)</Text>
+              <TextInput
+                style={[styles.linkFormInput, { minHeight: 56, textAlignVertical: 'top' }]}
+                value={linkDraft.notes}
+                onChangeText={(v) => setLinkDraft((d) => ({ ...d, notes: v }))}
+                placeholder="Anything worth remembering about this one"
+                placeholderTextColor={DIM}
+                multiline
+              />
+              <TouchableOpacity style={styles.linkFormSaveBtn} onPress={saveTripLink}>
+                <Text style={styles.linkFormSaveBtnText}>{editingLinkId ? 'Save Changes' : 'Add Link'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={{ alignItems: 'center', paddingVertical: 10 }} onPress={() => setLinkFormOpen(false)}>
+                <Text style={{ color: DIM, fontSize: 13 }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity style={styles.linkFormSaveBtn} onPress={() => openLinkForm(null)}>
+              <Text style={styles.linkFormSaveBtnText}>+ Add Link</Text>
+            </TouchableOpacity>
+          )}
+        </View>
         </>
         )}
       </ScrollView>
@@ -1005,6 +1215,38 @@ export default function TravelScreen({ trips, setTrips }) {
 }
 
 const styles = StyleSheet.create({
+  linkFormCard: { marginTop: 4, marginBottom: 12 },
+  linkFormLabel: { fontSize: 12, fontWeight: '600', color: DIM, marginTop: 12, marginBottom: 6 },
+  linkFormInput: {
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+    color: INK,
+  },
+  linkFormError: { color: ROSE, fontSize: 12, marginTop: 6 },
+  linkPreviewCard: {
+    marginTop: 10,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  linkPreviewImage: { width: '100%', height: 130, backgroundColor: '#14100c' },
+  linkPreviewDescription: { color: DIM, fontSize: 12, padding: 10, lineHeight: 16 },
+  linkFormSaveBtn: {
+    backgroundColor: GOLD,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  linkFormSaveBtnText: { color: '#1c1206', fontSize: 15, fontWeight: '700' },
   modeRow: {
     flexDirection: 'row', marginHorizontal: 16, marginTop: 12, marginBottom: 2,
     backgroundColor: CARD, borderRadius: 12, borderWidth: 1, borderColor: BORDER, padding: 4,
@@ -1221,4 +1463,3 @@ const styles = StyleSheet.create({
   cancelBtn: { paddingVertical: 10, alignItems: 'center', marginTop: 2 },
   cancelBtnText: { color: DIM, fontSize: 14 },
 });
-
