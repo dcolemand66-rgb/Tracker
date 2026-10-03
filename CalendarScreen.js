@@ -9,21 +9,30 @@ import {
   Modal,
 } from 'react-native';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
+import { CALENDAR_THEME } from './pageThemes';
+import PageHeader from './PageHeader';
 import { applyXPDelta } from './leveling';
 import {
   HABIT_POINTS,
   habitDaysLabel,
   habitScheduledOn,
   habitDoneOn,
+  habitStreak,
   todayDateKey,
   toggleHabitCompletion,
   formatTimeDisplay,
+  firstStepPerRoadmap,
+  toggleGoalTask,
 } from './habitUtils';
+import { normalizeExerciseState, currentStage, defaultUnlockedPatterns } from './workoutTracks';
+import { CARDISTRY_RANKS, currentRankIndex } from './cardistryRanks';
+import { MAX_ENERGY, ENERGY_PER_TASK } from './heroUtils';
+import { ROADMAP_GUIDES, firstStepForGuide } from './roadmapGuides';
 import { cancelTodayForHabit, scheduleTodoNotification, cancelTodoNotification } from './notifications';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import CalendarGrid from './CalendarGrid';
 
-export default function CalendarScreen({ data, habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, calendarViewMode, todoItems, setTodoItems, bodyRoutines, setBodyRoutines, onOpenHabit, bills, onOpenDating, onOpenSideQuests }) {
+export default function CalendarScreen({ data, habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, cards, setCards, stats, setStats, guideProgress, trackerItems, calendarViewMode, todoItems, setTodoItems, bodyRoutines, setBodyRoutines, onOpenHabit, bills, onOpenDating, onOpenSideQuests, onOpenRoadmaps, onOpenLesson }) {
   const [search, setSearch] = useState('');
   const [selectedDate, setSelectedDate] = useState(null);
   const [todoModalOpen, setTodoModalOpen] = useState(false);
@@ -164,6 +173,40 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
     );
   }
 
+  // What today's session actually is, not just "Tap to start" - fullest
+  // for Workout since that's what tracks per-exercise state on the habit
+  // itself already; other session types fall back to their day pattern
+  // since their specific content (book, technique, routine) isn't data
+  // this screen has - would need those props threaded in too.
+  // summary is the name+value line already shown; description is the
+  // exercise's own cue/note text, so the row explains not just WHAT
+  // today's activity is but HOW to actually do it.
+  function todaysActivityFor(h) {
+    if (h.sessionType === 'workout') {
+      const unlocked = h.unlockedPatterns && h.unlockedPatterns.length ? h.unlockedPatterns : defaultUnlockedPatterns();
+      const stateMap = normalizeExerciseState(h.exerciseState);
+      let firstCue = null;
+      const parts = unlocked.slice(0, 2).map((key, i) => {
+        const state = stateMap[key] || { stageIndex: 0, target: 1 };
+        const stage = currentStage(key, state.stageIndex);
+        const unit = stage.mode === 'time' ? 's' : ' reps';
+        if (i === 0) firstCue = stage.cue;
+        return `${stage.name} (${state.target}${unit})`;
+      });
+      const extra = unlocked.length > 2 ? ` +${unlocked.length - 2} more` : '';
+      return { summary: parts.join(', ') + extra, description: firstCue };
+    }
+    if (h.sessionType === 'cardistry') {
+      const mastered = h.mastered || {};
+      const rank = CARDISTRY_RANKS[currentRankIndex(mastered)];
+      if (!rank) return { summary: 'Tap to start', description: null };
+      const nextTech = rank.techniques.find((t) => !mastered[t.id]);
+      if (!nextTech) return { summary: `${rank.name} — rank complete`, description: null };
+      return { summary: `${nextTech.name} (${rank.name})`, description: nextTech.note };
+    }
+    return { summary: 'Tap to start', description: null };
+  }
+
   function toggleHabit(habit) {
     const newDone = toggleHabitCompletion(habit, {
       setHabits,
@@ -172,6 +215,8 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
       setHero,
       applyXPDelta,
       HABIT_POINTS,
+      cards,
+      setStats,
     });
     if (newDone) {
       cancelTodayForHabit(habit, todayKey).then((remaining) => {
@@ -180,6 +225,97 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
         );
       });
     }
+  }
+
+  // One "quest" per ROADMAP, not per goal - just its single next step,
+  // so this stays step-by-step instead of several goals' worth of
+  // parallel items. See firstStepPerRoadmap for how the step is picked.
+  const cardQuests = firstStepPerRoadmap(cards, habits);
+
+  // Same idea for the authored guides (Farming, Robotics) - these aren't
+  // user-created cards/goals, so they need their own next-step lookup,
+  // but they belong in the same "where do I stand on every roadmap"
+  // list. Shows the actual lesson/step name right here so you can see
+  // exactly where you are without leaving Calendar - no navigating to
+  // Roadmaps just to check.
+  const guideQuests = ROADMAP_GUIDES.map((guide) => {
+    // guideProgress is one flat object shared across every guide (keyed
+    // by step id, or course_<id> for course-based phases) - not nested
+    // per guide, so it's passed straight through here.
+    const step = firstStepForGuide(guide, guideProgress);
+    if (!step) return null;
+    return {
+      kind: 'guide',
+      id: `${guide.id}-${step.stepId || step.phaseId}`,
+      text: step.text,
+      cardTitle: guide.name,
+      goalTitle: step.phaseName && step.phaseName !== step.text ? step.phaseName : null,
+      lessonDay: step.lessonDay,
+      nextPartText: step.nextPartText,
+      guideId: guide.id,
+      courseId: step.courseId,
+      lessonId: step.lessonId,
+      partsDone: step.partsDone,
+      partsTotal: step.partsTotal,
+    };
+  }).filter(Boolean);
+
+  const roadmapQuests = [...cardQuests, ...guideQuests];
+
+  // Coming Soon items with a real YYYY-MM-DD date (free text like "Fall
+  // 2026"/"TBA" is only for when the date isn't known yet, and can't be
+  // placed on a calendar) - so you can actually see what's coming and
+  // when, sorted soonest first.
+  const upcomingReleases = (trackerItems || [])
+    .filter(
+      (i) =>
+        i.status === 'coming_soon' &&
+        !i.archived &&
+        i.releaseDate &&
+        /^\d{4}-\d{2}-\d{2}$/.test(i.releaseDate) &&
+        i.releaseDate >= todayKey
+    )
+    .sort((a, b) => a.releaseDate.localeCompare(b.releaseDate))
+    .slice(0, 8);
+
+  function daysUntil(dateStr) {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const target = new Date(y, m - 1, d);
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const diff = Math.round((target - now) / (1000 * 60 * 60 * 24));
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    return `${diff}d`;
+  }
+
+  function toggleQuest(q) {
+    if (q.kind === 'guide') {
+      // Jump straight into the lesson (and the right part within it) -
+      // CoursePlayer picks up from here, so tapping doesn't just dump you
+      // on the general Roadmaps list.
+      if (onOpenLesson && q.courseId && q.lessonId) {
+        onOpenLesson(q.guideId, q.courseId, q.lessonId);
+      } else if (onOpenRoadmaps) {
+        onOpenRoadmaps();
+      }
+      return;
+    }
+    if (q.kind === 'habit') {
+      toggleHabit(q.habit);
+      return;
+    }
+    toggleGoalTask(q.cardId, q.goalId, q, {
+      cards,
+      setCards,
+      setRewardPoints,
+      setHero,
+      setLevel,
+      setStats,
+      applyXPDelta,
+      MAX_ENERGY,
+      ENERGY_PER_TASK,
+    });
   }
 
   const HOURS_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -230,7 +366,7 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
   return (
     <ScrollView contentContainerStyle={shared.container}>
       <View>
-        <Text style={shared.h1}>Calendar</Text>
+        <PageHeader theme={CALENDAR_THEME} title="Calendar" />
         <Text style={shared.tagline}>
           {dateLabel} • {timeLabel}
         </Text>
@@ -425,6 +561,89 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
 
       <View style={shared.block}>
           <View style={shared.blockHead}>
+            <Text style={shared.blockTitle}>📜 Quests</Text>
+          </View>
+          {roadmapQuests.length === 0 ? (
+            <Text style={shared.tagline}>
+              No roadmaps in progress. Add a task to a goal (or link a habit to it) in Roadmaps,
+              or start a guide like Farming or Robotics, to see your next step here.
+            </Text>
+          ) : (
+            roadmapQuests.map((q) => (
+              <TouchableOpacity
+                key={`${q.kind}-${q.cardId || ''}-${q.goalId || ''}-${q.id}`}
+                style={shared.row}
+                onPress={() => toggleQuest(q)}
+              >
+                {q.kind === 'guide' ? (
+                  <View
+                    style={{
+                      width: 26,
+                      height: 26,
+                      borderRadius: 13,
+                      backgroundColor: 'rgba(230,180,80,0.15)',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: 10,
+                    }}
+                  >
+                    <Text style={{ fontSize: 13 }}>📖</Text>
+                  </View>
+                ) : (
+                  <View
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: 6,
+                      borderWidth: 2,
+                      borderColor: GOLD,
+                      marginRight: 10,
+                    }}
+                  />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, color: INK, fontWeight: '500' }}>{q.text}</Text>
+                  <Text style={{ fontSize: 12, color: DIM, marginTop: 2 }}>
+                    {q.cardTitle}
+                    {q.goalTitle ? ` · ${q.goalTitle}` : ''}
+                    {q.lessonDay ? ` · Day ${q.lessonDay}` : ''}
+                    {q.partsTotal ? ` · ${q.partsDone}/${q.partsTotal} sections` : ''}
+                  </Text>
+                  {q.nextPartText ? (
+                    <Text style={{ fontSize: 12, color: GOLD, marginTop: 2, fontWeight: '600' }} numberOfLines={1}>
+                      Next: {q.nextPartText}
+                    </Text>
+                  ) : null}
+                </View>
+                {q.kind === 'guide' ? (
+                  <Text style={{ fontSize: 18, color: GOLD, marginLeft: 6 }}>›</Text>
+                ) : null}
+              </TouchableOpacity>
+            ))
+          )}
+      </View>
+
+      {upcomingReleases.length > 0 ? (
+        <View style={shared.block}>
+          <View style={shared.blockHead}>
+            <Text style={shared.blockTitle}>📺 Upcoming Releases</Text>
+          </View>
+          {upcomingReleases.map((i) => (
+            <View key={i.id} style={shared.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 15, color: INK, fontWeight: '500' }} numberOfLines={1}>
+                  {i.title}
+                </Text>
+                <Text style={{ fontSize: 12, color: DIM, marginTop: 2 }}>{i.releaseDate}</Text>
+              </View>
+              <Text style={{ fontSize: 12, color: GOLD, fontWeight: '700' }}>{daysUntil(i.releaseDate)}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      <View style={shared.block}>
+          <View style={shared.blockHead}>
             <Text style={shared.blockTitle}>To Do</Text>
             <TouchableOpacity onPress={() => setTodoModalOpen(true)}>
               <Text style={{ color: GOLD, fontWeight: '700', fontSize: 14 }}>+ Add</Text>
@@ -526,17 +745,38 @@ export default function CalendarScreen({ data, habits, setHabits, level, setLeve
                     <Text style={{ fontSize: 15, color: INK, fontWeight: '500' }}>
                       {h.text}
                     </Text>
-                    <Text style={{ fontSize: 12, color: DIM, marginTop: 2 }}>
-                      {autoTracked
-                        ? 'Tap to start'
-                        : habitDaysLabel(h)}
-                    </Text>
+                    {autoTracked ? (
+                      (() => {
+                        const activity = todaysActivityFor(h);
+                        return (
+                          <>
+                            <Text style={{ fontSize: 12, color: DIM, marginTop: 2 }} numberOfLines={1}>
+                              {activity.summary}
+                            </Text>
+                            {activity.description ? (
+                              <Text style={{ fontSize: 11, color: DIM, marginTop: 2, opacity: 0.75 }} numberOfLines={2}>
+                                {activity.description}
+                              </Text>
+                            ) : null}
+                          </>
+                        );
+                      })()
+                    ) : (
+                      <Text style={{ fontSize: 12, color: DIM, marginTop: 2 }} numberOfLines={1}>
+                        {habitDaysLabel(h)}
+                      </Text>
+                    )}
                   </View>
-                  {h.time ? (
-                    <Text style={{ fontSize: 12, color: DIM }}>
-                      {formatTimeDisplay(h.time)}
-                    </Text>
-                  ) : null}
+                  <View style={{ alignItems: 'flex-end' }}>
+                    {h.time ? (
+                      <Text style={{ fontSize: 12, color: DIM }}>{formatTimeDisplay(h.time)}</Text>
+                    ) : null}
+                    {habitStreak(h) > 0 ? (
+                      <Text style={{ fontSize: 12, color: GOLD, fontWeight: '700', marginTop: h.time ? 2 : 0 }}>
+                        🔥 {habitStreak(h)}
+                      </Text>
+                    ) : null}
+                  </View>
                 </TouchableOpacity>
               );
             })

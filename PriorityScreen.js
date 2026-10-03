@@ -1,71 +1,52 @@
 import React from 'react';
-import { ScrollView, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { ScrollView, View, Text, TouchableOpacity, Image, StyleSheet, Alert } from 'react-native';
 import { shared, GOLD, INK, DIM, BORDER } from './theme';
-import { currentGrowthTarget, completionsUntilNextStep, completionsSinceStart } from './growthMath';
 import { estimateCompletion, catLabel } from './trackerMath';
 
-// One place for "what should I focus on" - pulling together the two
-// systems that already rank things on their own (habit growth targets,
-// tracker fastest-to-finish) instead of making the user check two
-// separate screens to answer the same question.
-export default function PriorityScreen({ habits, items, categories, onOpenHabit, onOpenTrackerItem }) {
-  const growthHabits = (habits || [])
-    .filter((h) => h.growth && h.growth.enabled)
-    .map((h) => {
-      const completions = completionsSinceStart(h, h.growth);
-      return {
-        habit: h,
-        target: currentGrowthTarget(h.growth, completions),
-        nextIn: completionsUntilNextStep(h.growth, completions),
-        unit: h.growth.unit,
-      };
-    })
-    .sort((a, b) => (a.nextIn || 0) - (b.nextIn || 0));
+function formatCompletedDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
+// What should I focus on next, pulled from what's already ranking
+// itself in the Tracker (fastest to finish) rather than a separate
+// system you have to opt into per habit.
+export default function PriorityScreen({ habits, items, categories, setItems, onOpenHabit, onOpenTrackerItem }) {
   const finishItems = (items || [])
+    .filter((it) => !it.archived) // Finished/archived items have their own screen now.
     .map((it) => ({ item: it, completion: estimateCompletion(it, categories || []) }))
     .filter((x) => x.completion)
     .sort((a, b) => a.completion.remainingPercent - b.completion.remainingPercent);
 
+  const finishedItems = (items || [])
+    .filter((it) => it.archived)
+    .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+
+  function restoreItem(item) {
+    if (!setItems) return;
+    setItems((prev) =>
+      prev.map((it) => (it.id === item.id ? { ...it, archived: false, completedAt: null } : it))
+    );
+  }
+
+  function deleteArchivedItem(item) {
+    if (!setItems) return;
+    setItems((prev) => prev.filter((it) => it.id !== item.id));
+  }
+
+  function onLongPressFinished(item) {
+    Alert.alert(item.title, 'What would you like to do?', [
+      { text: 'Restore', onPress: () => restoreItem(item) },
+      { text: 'Delete', style: 'destructive', onPress: () => deleteArchivedItem(item) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
   return (
     <ScrollView contentContainerStyle={shared.container}>
       <Text style={shared.h1}>🎯 Priority</Text>
-      <Text style={shared.tagline}>
-        Habit growth and Fastest to Finish, side by side - everything already ranking
-        itself, gathered in one spot.
-      </Text>
-
-      <View style={shared.block}>
-        <View style={shared.blockHead}>
-          <Text style={shared.blockTitle}>Habits — Growing Targets</Text>
-        </View>
-        {growthHabits.length === 0 ? (
-          <Text style={shared.tagline}>
-            No habits have a growing target on yet. Turn one on from a habit's detail page or
-            from Settings → Habit Growth.
-          </Text>
-        ) : (
-          growthHabits.map(({ habit, target, nextIn, unit }) => (
-            <TouchableOpacity
-              key={habit.id}
-              style={styles.row}
-              onPress={() => onOpenHabit && onOpenHabit(habit.id)}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle}>{habit.text}</Text>
-                <Text style={styles.rowSub}>
-                  {target} {unit} today
-                </Text>
-              </View>
-              <View style={styles.badge}>
-                <Text style={styles.badgeText}>
-                  {nextIn === 0 ? 'Steps up now' : `+${nextIn} to next step`}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ))
-        )}
-      </View>
+      <Text style={shared.tagline}>What's closest to done, ranked automatically.</Text>
 
       <View style={shared.block}>
         <View style={shared.blockHead}>
@@ -83,6 +64,13 @@ export default function PriorityScreen({ habits, items, categories, onOpenHabit,
               style={styles.row}
               onPress={() => onOpenTrackerItem && onOpenTrackerItem(item.id)}
             >
+              <View style={styles.thumb}>
+                {item.image ? (
+                  <Image source={{ uri: item.image }} style={styles.thumbImg} resizeMode="cover" />
+                ) : (
+                  <Text style={styles.thumbLetter}>{(item.title || '?').charAt(0).toUpperCase()}</Text>
+                )}
+              </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle}>{item.title}</Text>
                 <Text style={styles.rowSub}>{catLabel(categories || [], item.category)}</Text>
@@ -97,6 +85,45 @@ export default function PriorityScreen({ habits, items, categories, onOpenHabit,
           ))
         )}
       </View>
+
+      <View style={shared.block}>
+        <View style={shared.blockHead}>
+          <Text style={shared.blockTitle}>🏁 Finished</Text>
+        </View>
+        {finishedItems.length === 0 ? (
+          <Text style={shared.tagline}>
+            Nothing finished yet. Mark something done on the Tracker and it'll land here.
+          </Text>
+        ) : (
+          <>
+            <Text style={[shared.tagline, { marginBottom: 6 }]}>
+              Press and hold a title for Restore or Delete.
+            </Text>
+            {finishedItems.map((item) => (
+              <TouchableOpacity
+                key={item.id}
+                style={styles.row}
+                onPress={() => onOpenTrackerItem && onOpenTrackerItem(item.id)}
+                onLongPress={() => onLongPressFinished(item)}
+                delayLongPress={350}
+              >
+                <View style={styles.thumb}>
+                  {item.image ? (
+                    <Image source={{ uri: item.image }} style={styles.thumbImg} resizeMode="cover" />
+                  ) : (
+                    <Text style={styles.thumbLetter}>{(item.title || '?').charAt(0).toUpperCase()}</Text>
+                  )}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>{item.title}</Text>
+                  <Text style={styles.rowSub}>{catLabel(categories || [], item.category)}</Text>
+                </View>
+                <Text style={styles.finishedDate}>{formatCompletedDate(item.completedAt)}</Text>
+              </TouchableOpacity>
+            ))}
+          </>
+        )}
+      </View>
     </ScrollView>
   );
 }
@@ -109,6 +136,20 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER,
   },
+  thumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#1f1a15',
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginRight: 12,
+  },
+  thumbImg: { width: '100%', height: '100%' },
+  thumbLetter: { color: GOLD, fontSize: 16, fontWeight: '800' },
   rowTitle: { color: INK, fontSize: 15, fontWeight: '700' },
   rowSub: { color: DIM, fontSize: 12, marginTop: 2 },
   badge: {
@@ -121,4 +162,5 @@ const styles = StyleSheet.create({
     marginLeft: 10,
   },
   badgeText: { color: GOLD, fontSize: 12, fontWeight: '700' },
+  finishedDate: { color: '#4fb894', fontSize: 11.5, fontWeight: '700', marginLeft: 10 },
 });

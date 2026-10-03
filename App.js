@@ -46,6 +46,7 @@ import { GOLD, INK, DIM, CARD, BORDER, BLUE, ROSE, glowRose } from './theme';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { signInToFirebaseWithGoogle, pushBackupToCloud, pullBackupFromCloud } from './firebaseSync';
 import { migrateBase64PhotosToFiles, convertBase64PhotosToFilesInPlace } from './photoMigration';
+import ErrorBoundary from './ErrorBoundary';
 
 const STORAGE_KEY = 'tracker_expo_data_v12';
 
@@ -134,6 +135,7 @@ function MainApp() {
   const [idleonTracker, setIdleonTracker] = useState({ categories: [], links: [] });
   const [farmingProgress, setFarmingProgress] = useState({});
   const [pendingHabitId, setPendingHabitId] = useState(null);
+  const [pendingLesson, setPendingLesson] = useState(null); // { guideId, courseId, lessonId } from a Calendar quest tap
   const [saveError, setSaveError] = useState(null);
   const [loadError, setLoadError] = useState(null);
   const [saveBytes, setSaveBytes] = useState(0);
@@ -804,6 +806,7 @@ function MainApp() {
       ) : null}
 
       <View style={{ flex: 1 }}>
+        <ErrorBoundary key={tab} label={activeLabel} onReset={() => setTab('calendar')}>
         {tab === 'calendar' && (
           <CalendarScreen
             data={data}
@@ -815,6 +818,12 @@ function MainApp() {
             setRewardPoints={setRewardPoints}
             hero={hero}
             setHero={setHero}
+            cards={cards}
+            setCards={setCards}
+            stats={stats}
+            setStats={setStats}
+            guideProgress={farmingProgress}
+            trackerItems={items}
             calendarViewMode={calendarViewMode}
             todoItems={todoItems}
             setTodoItems={setTodoItems}
@@ -830,6 +839,11 @@ function MainApp() {
               setTab('habits');
             }}
             onOpenSideQuests={() => setTab('sidequests')}
+            onOpenRoadmaps={() => setTab('roadmaps')}
+            onOpenLesson={(guideId, courseId, lessonId) => {
+              setPendingLesson({ guideId, courseId, lessonId });
+              setTab('roadmaps');
+            }}
           />
         )}
         {tab === 'sidequests' && (
@@ -869,6 +883,8 @@ function MainApp() {
             guideProgress={farmingProgress}
             setGuideProgress={setFarmingProgress}
             onGoToCalendar={() => setTab('calendar')}
+            pendingLesson={pendingLesson}
+            onPendingLessonHandled={() => setPendingLesson(null)}
           />
         )}
         {tab === 'travel' && <TravelScreen trips={trips} setTrips={setTrips} />}
@@ -904,6 +920,7 @@ function MainApp() {
             habits={habits}
             items={items}
             categories={categories}
+            setItems={setItems}
             onOpenHabit={(id) => {
               setPendingHabitId(id);
               setTab('habits');
@@ -1009,6 +1026,10 @@ function MainApp() {
             setRewardPoints={setRewardPoints}
             hero={hero}
             setHero={setHero}
+            cards={cards}
+            setCards={setCards}
+            stats={stats}
+            setStats={setStats}
             meditationSettings={meditationSettings}
             bodyWorkouts={bodyWorkouts}
             setBodyWorkouts={setBodyWorkouts}
@@ -1019,6 +1040,7 @@ function MainApp() {
             setBodyRoutines={setBodyRoutines}
           />
         )}
+        </ErrorBoundary>
       </View>
 
       <Modal

@@ -3,7 +3,9 @@ import { View, Text, Image, ImageBackground, Animated, Easing, TouchableOpacity,
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { xpForLevel } from './leveling';
 import { habitDoneOn, todayDateKey, habitStreak } from './habitUtils';
-import { WEAPON_TIERS, ARMOR_TIERS, minionFightCost, MINION_TYPES, MAX_ENERGY, ABILITIES } from './heroUtils';
+import { WEAPON_TIERS, ARMOR_TIERS, minionCostWithDiscipline, statLevel, MINION_TYPES, MAX_ENERGY, ABILITIES } from './heroUtils';
+import { currentPhase } from './roboticsRoadmap';
+import { COURSES, questionPoolForCourse } from './courses';
 import { RONIN_IDLE_FRAMES, RONIN_ATTACK_FRAMES } from './roninSprites';
 import { ONI_IDLE_FRAMES, ONI_ATTACK_FRAMES } from './oniSprites';
 import { PROVINCE_BACKGROUND } from './provinceBackgrounds';
@@ -49,6 +51,8 @@ export default function RoadmapIdleWorld({
   setHero,
   habits,
   cards,
+  stats,
+  guideProgress,
   rewardPoints,
   setRewardPoints,
   onFightMinion,
@@ -63,8 +67,68 @@ export default function RoadmapIdleWorld({
   const insets = useSafeAreaInsets();
   const weapon = WEAPON_TIERS[hero.weaponTier] || WEAPON_TIERS[0];
   const armor = ARMOR_TIERS[hero.armorTier] || ARMOR_TIERS[0];
-  const cost = minionFightCost(hero.weaponTier);
+  const cost = minionCostWithDiscipline(hero.weaponTier, stats);
   const needed = xpForLevel(level);
+
+  // Solve to Attack: every attack (auto-cleared from real habits/tasks,
+  // and the manual Honor-spent one) now runs through a real question from
+  // whichever course you're actually on in Roadmaps - not a separate quiz
+  // bank, the same review-only pool (already-completed parts only, so
+  // nothing here spoils content you haven't reached yet).
+  const activePhase = currentPhase(guideProgress);
+  const activeCourse = activePhase && activePhase.course ? COURSES[activePhase.course] : null;
+  const questionPool = activeCourse ? questionPoolForCourse(activeCourse, guideProgress) : [];
+  const [quizQuestion, setQuizQuestion] = useState(null);
+  const [quizFeedback, setQuizFeedback] = useState(null); // 'correct' | 'wrong' | null
+  const quizResolveRef = useRef(null);
+  const lastQuizIdRef = useRef(null);
+
+  function pickQuestion() {
+    if (!questionPool.length) return null;
+    if (questionPool.length === 1) return questionPool[0];
+    // Avoid immediately repeating the same question on a retry.
+    let q;
+    let guardCount = 0;
+    do {
+      q = questionPool[Math.floor(Math.random() * questionPool.length)];
+      guardCount += 1;
+    } while (q.partId === lastQuizIdRef.current && guardCount < 8);
+    return q;
+  }
+
+  // onSuccess runs once the question is answered correctly. retryOnWrong
+  // keeps asking (new question each time) rather than counting a miss -
+  // used for auto-cleared kills, since that reward was already earned by
+  // a real habit/task and shouldn't be lost to a wrong answer. Manual
+  // attacks pass retryOnWrong: false, so a miss is a real miss.
+  function askQuiz(onSuccess, retryOnWrong) {
+    const q = pickQuestion();
+    if (!q) {
+      onSuccess(); // nothing reviewable yet - don't block real progress
+      return;
+    }
+    lastQuizIdRef.current = q.partId;
+    quizResolveRef.current = { onSuccess, retryOnWrong };
+    setQuizQuestion(q);
+  }
+
+  function answerQuiz(index) {
+    if (!quizQuestion || quizFeedback) return;
+    const correct = index === quizQuestion.correct;
+    setQuizFeedback(correct ? 'correct' : 'wrong');
+    setTimeout(() => {
+      const resolve = quizResolveRef.current;
+      setQuizFeedback(null);
+      if (correct) {
+        setQuizQuestion(null);
+        if (resolve) resolve.onSuccess();
+      } else if (resolve && resolve.retryOnWrong) {
+        askQuiz(resolve.onSuccess, true);
+      } else {
+        setQuizQuestion(null);
+      }
+    }, 900);
+  }
 
   // Tier 0 (Fists / No Armor) is always owned for free - everything past
   // that is a one-time purchase, tracked here rather than the tier data
@@ -368,12 +432,18 @@ export default function RoadmapIdleWorld({
     processingRef.current = true;
     const next = queue[0];
     setActiveFight(next);
+    // Solve to Attack: the kill itself was already earned by completing a
+    // real habit/task, so a wrong answer just asks again with a new
+    // question rather than losing the reward - this is review, not a
+    // pass/fail gate on progress you already made.
     setTimeout(() => {
-      onFightMinion(realm.tier);
-      setSessionKills((k) => k + 1);
-      setQueue((q) => q.slice(1));
-      setActiveFight(null);
-      processingRef.current = false;
+      askQuiz(() => {
+        onFightMinion(realm.tier);
+        setSessionKills((k) => k + 1);
+        setQueue((q) => q.slice(1));
+        setActiveFight(null);
+        processingRef.current = false;
+      }, true);
     }, 400); // short real delay so rapid multi-completions don't collapse into one tick - matches the 4-frame attack cycle above (4 x 100ms)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, hero.energy, realm.tier]);
@@ -428,11 +498,15 @@ export default function RoadmapIdleWorld({
   // not a way to skip past real tasks. Same weapon-scaled damage pool
   // either way, so gear matters here too.
   const ATTACK_HONOR_COST = 15;
-  const baseAttackDamage = Math.round(weapon.atk * 3);
+  const strengthLevel = statLevel(stats, 'Strength');
+  const mindLevel = statLevel(stats, 'Mind');
+  const baseAttackDamage = Math.round(weapon.atk * 3) + (strengthLevel - 1) * 3;
   // Crit chance scales gently with weapon tier - another reason gear
   // upgrades (bought with real Koku, earned from real tasks) feel better,
-  // on top of the flat damage bump they already give.
-  const critChance = Math.min(0.35, 0.08 + hero.weaponTier * 0.04);
+  // on top of the flat damage bump they already give. Mind adds a smaller
+  // bonus on top, so real tasks/habits (which feed Mind) sharpen focus in
+  // a felt way too, not just gear.
+  const critChance = Math.min(0.45, 0.08 + hero.weaponTier * 0.04 + (mindLevel - 1) * 0.02);
   const canManualAttack =
     embers >= ATTACK_HONOR_COST && (bossReady ? !awaitingFinishingBlow : !!displayTarget && minionHP > 0);
 
@@ -450,17 +524,22 @@ export default function RoadmapIdleWorld({
 
   function manualAttack() {
     if (!canManualAttack) return;
-    const isCrit = Math.random() < critChance;
-    const dealt = isCrit ? baseAttackDamage * 2 : baseAttackDamage;
+    // Honor is spent on the attempt itself, win or lose - a wrong answer
+    // here is a real miss, not a retry, since this attack (unlike the
+    // auto-cleared ones above) wasn't already earned by a real habit.
     setEmbers((e) => Math.round((e - ATTACK_HONOR_COST) * 10) / 10);
-    if (bossReady) {
-      setHero((prev) => ({ ...prev, bossDamageDealt: (prev.bossDamageDealt || 0) + dealt }));
-    } else {
-      setMinionHP((hp) => Math.max(0, hp - dealt));
-    }
-    setRoninBossAttacking(true);
-    spawnPopup(dealt, isCrit);
-    playAbilityFlash();
+    askQuiz(() => {
+      const isCrit = Math.random() < critChance;
+      const dealt = isCrit ? baseAttackDamage * 2 : baseAttackDamage;
+      if (bossReady) {
+        setHero((prev) => ({ ...prev, bossDamageDealt: (prev.bossDamageDealt || 0) + dealt }));
+      } else {
+        setMinionHP((hp) => Math.max(0, hp - dealt));
+      }
+      setRoninBossAttacking(true);
+      spawnPopup(dealt, isCrit);
+      playAbilityFlash();
+    }, false);
   }
 
   // --- Abilities: one-time Koku unlock, then Honor-cost + cooldown use ---
@@ -507,15 +586,20 @@ export default function RoadmapIdleWorld({
     playAbilityFlash();
 
     if (id === 'focused_strike') {
-      const dmg = Math.round(weapon.atk * 8);
-      if (bossReady) {
-        if (!awaitingFinishingBlow) {
-          setHero((prev) => ({ ...prev, bossDamageDealt: (prev.bossDamageDealt || 0) + dmg }));
+      // Same Solve to Attack gate as a regular attack - Honor's already
+      // spent above, so a wrong answer here is a real miss, same as a
+      // missed manual attack.
+      askQuiz(() => {
+        const dmg = Math.round(weapon.atk * 8) + (strengthLevel - 1) * 8;
+        if (bossReady) {
+          if (!awaitingFinishingBlow) {
+            setHero((prev) => ({ ...prev, bossDamageDealt: (prev.bossDamageDealt || 0) + dmg }));
+          }
+        } else if (displayTarget) {
+          setMinionHP((hp) => Math.max(0, hp - dmg));
         }
-      } else if (displayTarget) {
-        setMinionHP((hp) => Math.max(0, hp - dmg));
-      }
-      setRoninBossAttacking(true);
+        setRoninBossAttacking(true);
+      }, false);
     } else if (id === 'second_wind') {
       setHero((prev) => ({ ...prev, energy: Math.min(MAX_ENERGY, (prev.energy || 0) + 30) }));
     }
@@ -1005,6 +1089,46 @@ export default function RoadmapIdleWorld({
           </TouchableOpacity>
         ))}
       </View>
+
+      {/* Solve to Attack — every attack in this game routes through here.
+          Sits above everything else so it can gate a hit no matter which
+          tab is showing underneath. */}
+      {quizQuestion ? (
+        <View style={styles.quizOverlay}>
+          <View style={styles.quizCard}>
+            <Text style={styles.quizPrompt}>
+              {bossReady ? 'Solve to strike the boss!' : 'Solve to attack!'}
+            </Text>
+            <Text style={styles.quizQuestionText}>{quizQuestion.q}</Text>
+            <View style={styles.quizOptionsGrid}>
+              {quizQuestion.options.map((opt, i) => {
+                const isCorrectChoice = quizFeedback && i === quizQuestion.correct;
+                return (
+                  <TouchableOpacity
+                    key={i}
+                    style={[
+                      styles.quizOptionBtn,
+                      isCorrectChoice && styles.quizOptionCorrect,
+                      quizFeedback && !isCorrectChoice && styles.quizOptionDim,
+                    ]}
+                    disabled={!!quizFeedback}
+                    onPress={() => answerQuiz(i)}
+                  >
+                    <Text style={styles.quizOptionText}>{opt}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {quizFeedback === 'correct' ? (
+              <Text style={styles.quizFeedbackHit}>Hit!</Text>
+            ) : quizFeedback === 'wrong' ? (
+              <Text style={styles.quizFeedbackMiss}>
+                Miss — {quizQuestion.why || `the answer was "${quizQuestion.options[quizQuestion.correct]}"`}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -1183,4 +1307,43 @@ const styles = StyleSheet.create({
   tabBtnIcon: { fontSize: 14, marginBottom: 2 },
   tabBtnText: { color: DIM, fontSize: 11, fontWeight: '600' },
   tabBtnTextActive: { color: GOLD_LIGHT, fontWeight: '800' },
+  quizOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 60,
+    padding: 20,
+  },
+  quizCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: BLUE,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER_STRONG,
+    padding: 20,
+  },
+  quizPrompt: { color: GOLD_LIGHT, fontSize: 13, fontWeight: '800', letterSpacing: 0.5, marginBottom: 10, textAlign: 'center' },
+  quizQuestionText: { color: INK, fontSize: 17, fontWeight: '700', textAlign: 'center', marginBottom: 18, lineHeight: 23 },
+  quizOptionsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  quizOptionBtn: {
+    width: '48%',
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  quizOptionCorrect: { borderColor: JADE, backgroundColor: 'rgba(84,196,140,0.12)' },
+  quizOptionDim: { opacity: 0.45 },
+  quizOptionText: { color: INK, fontSize: 15, fontWeight: '700' },
+  quizFeedbackHit: { color: JADE_LIGHT, fontSize: 15, fontWeight: '800', textAlign: 'center', marginTop: 4 },
+  quizFeedbackMiss: { color: ROSE, fontSize: 13, fontWeight: '700', textAlign: 'center', marginTop: 4 },
 });

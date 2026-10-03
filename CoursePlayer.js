@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, StyleSheet } from 'react-native';
 import { Linking } from 'react-native';
 import { GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
@@ -31,8 +31,8 @@ function StepsBlock({ steps }) {
   );
 }
 
-export default function CoursePlayer({ course, progress, setProgress, onExit }) {
-  const [lessonId, setLessonId] = useState(null);
+export default function CoursePlayer({ course, progress, setProgress, onExit, initialLessonId }) {
+  const [lessonId, setLessonId] = useState(initialLessonId || null);
   const [partIndex, setPartIndex] = useState(null); // null = lesson contents
   const [choice, setChoice] = useState(null);
   const [testMode, setTestMode] = useState(false);
@@ -41,6 +41,24 @@ export default function CoursePlayer({ course, progress, setProgress, onExit }) 
   const [submitted, setSubmitted] = useState(false);
 
   const prog = progress || {};
+
+  // A deep link from Calendar's Quests section - jump straight to this
+  // lesson AND to whichever part isn't finished yet, instead of landing
+  // on the lesson's contents list and making you tap in again.
+  useEffect(() => {
+    if (!initialLessonId) return;
+    const l = course.lessons.find((x) => x.id === initialLessonId);
+    if (!l) return;
+    setLessonId(initialLessonId);
+    setTestMode(false);
+    setProjectMode(false);
+    const parts = l.parts || [];
+    const lp = (prog[initialLessonId] || {}).parts || {};
+    const firstUnfinished = parts.length ? parts.findIndex((p) => !lp[p.id]) : -1;
+    setPartIndex(firstUnfinished >= 0 ? firstUnfinished : parts.length ? 0 : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialLessonId]);
+
   const lesson = course.lessons.find((l) => l.id === lessonId);
 
   // The outline was hardcoded to Python's 100 days, so every course
@@ -212,6 +230,8 @@ export default function CoursePlayer({ course, progress, setProgress, onExit }) 
               video={lesson.video}
               watched={!!(prog[lesson.id] || {}).videoWatched}
               onWatched={() => save(lesson.id, { videoWatched: true })}
+              savedPos={(prog[lesson.id] || {}).videoPos || 0}
+              onProgress={(pos) => save(lesson.id, { videoPos: pos })}
             />
           ) : null}
 

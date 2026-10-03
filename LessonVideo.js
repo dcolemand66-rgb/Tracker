@@ -11,7 +11,7 @@ import { GOLD, INK, DIM, BORDER } from './theme';
 // drifts outside. The result is that only the segment exists as far as
 // the learner is concerned.
 
-function html(videoId, start, end) {
+function html(videoId, start, end, resumeAt) {
   return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -24,7 +24,7 @@ function html(videoId, start, end) {
 <div id="p"></div><div id="veil"></div>
 <script src="https://www.youtube.com/iframe_api"></script>
 <script>
-  var START = ${start}, END = ${end}, player, timer;
+  var START = ${start}, END = ${end}, RESUME = ${resumeAt}, player, timer;
   function send(o){ window.ReactNativeWebView.postMessage(JSON.stringify(o)); }
 
   function onYouTubeIframeAPIReady(){
@@ -37,7 +37,12 @@ function html(videoId, start, end) {
         origin: 'https://localhost'
       },
       events: {
-        onReady: function(){ send({type:'ready', duration: END - START}); },
+        onReady: function(){
+          // Resume where you left off last time, rather than always
+          // restarting the segment from the very beginning.
+          if (RESUME > START) player.seekTo(RESUME, true);
+          send({type:'ready', duration: END - START});
+        },
         onStateChange: function(e){
           if (e.data === YT.PlayerState.PLAYING) startTimer();
           else stopTimer();
@@ -85,12 +90,13 @@ function mmss(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-export default function LessonVideo({ video, watched, onWatched }) {
+export default function LessonVideo({ video, watched, onWatched, savedPos, onProgress }) {
   const ref = useRef(null);
   const [playing, setPlaying] = useState(false);
-  const [pos, setPos] = useState(0);
+  const [pos, setPos] = useState(savedPos || 0);
   const [len, setLen] = useState((video.end || 0) - (video.start || 0));
   const doneRef = useRef(!!watched);
+  const lastSavedRef = useRef(savedPos || 0);
 
   useEffect(() => {
     doneRef.current = !!watched;
@@ -99,6 +105,7 @@ export default function LessonVideo({ video, watched, onWatched }) {
   if (!video || !video.videoId) return null;
   const start = video.start || 0;
   const end = video.end || start + 600;
+  const resumeAt = start + (savedPos || 0);
 
   function onMessage(e) {
     try {
@@ -106,6 +113,14 @@ export default function LessonVideo({ video, watched, onWatched }) {
       if (m.type === 'tick') {
         setPos(m.pos);
         setLen(m.len);
+        // Persisted so closing and reopening the lesson resumes here
+        // instead of restarting the clip from the beginning every time -
+        // throttled to roughly every 5 seconds of playback rather than
+        // every 500ms tick, so this isn't writing progress twice a second.
+        if (onProgress && Math.abs(m.pos - lastSavedRef.current) >= 5) {
+          lastSavedRef.current = m.pos;
+          onProgress(Math.floor(m.pos));
+        }
         // Count it watched at 90% — the last few seconds are usually
         // sign-off, and forcing them just makes people skip ahead.
         if (!doneRef.current && m.pos / m.len > 0.9) {
@@ -133,7 +148,7 @@ export default function LessonVideo({ video, watched, onWatched }) {
       <View style={styles.player}>
         <WebView
           ref={ref}
-          source={{ html: html(video.videoId, start, end), baseUrl: 'https://localhost/' }}
+          source={{ html: html(video.videoId, start, end, resumeAt), baseUrl: 'https://localhost/' }}
           originWhitelist={['*']}
           javaScriptEnabled
           domStorageEnabled

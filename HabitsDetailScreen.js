@@ -11,6 +11,8 @@ import {
   Alert,
 } from 'react-native';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
+import { HABITS_THEME } from './pageThemes';
+import PageHeader from './PageHeader';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { applyXPDelta } from './leveling';
 import { HABIT_POINTS } from './habitUtils';
@@ -33,6 +35,11 @@ import MeditationSession, {
   MEDITATION_MAX_LEVEL,
   DAYS_PER_LEVEL,
 } from './MeditationSession';
+import BoxBreathingSession from './BoxBreathingSession';
+import BodyScanSession from './BodyScanSession';
+import MeditationMenu from './MeditationMenu';
+import MeditationGrowthGraph from './MeditationGrowthGraph';
+import { meditationBackgroundById } from './meditationBackgrounds';
 import { setPhoneAlarmForHabit, openPhoneClock, canSetPhoneAlarm } from './phoneAlarm';
 import { defaultGrowth, currentGrowthTarget, completionsUntilNextStep, completionsSinceStart, logGrowthFeel, hasLoggedFeelToday } from './growthMath';
 import SelfCareSession from './SelfCareSession';
@@ -52,11 +59,23 @@ import {
   chapterForPage,
 } from './cardistryRanks';
 import GuidedWorkoutSession, {
-  WORKOUT_TEMPLATES,
-  REPS_TO_ADVANCE,
-  WORKOUT_MAX_LEVEL,
-  workoutLevelSpec,
+  buildWorkoutTemplate,
+  evaluateAllTracks,
 } from './GuidedWorkoutSession';
+import {
+  TRACKS,
+  CORE_TRACKS,
+  BASIC_ORDER,
+  OPTIONAL_KEYS,
+  REP_UNLOCK_THRESHOLD,
+  currentStage,
+  defaultUnlockedPatterns,
+  normalizeExerciseState,
+} from './workoutTracks';
+
+const BASIC_LABELS = { push: 'Push', squat: 'Squat', antiExtension: 'Core', extension: 'Core (extension)', pull: 'Pull', hinge: 'Hinge', row: 'Row' };
+import { defaultDifficulty, computeConsistency, getSessionDifficulty } from './consistencyEngine';
+import MoodCheckIn from './MoodCheckIn';
 
 function makeId(prefix = 'h') {
   return prefix + Date.now() + Math.random().toString(36).slice(2, 8);
@@ -80,7 +99,7 @@ function dateToTimeString(d) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-export default function HabitsDetailScreen({ habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, meditationSettings, bodyWorkouts, setBodyWorkouts, bodyExercises, pendingHabitId, onPendingHandled,
+export default function HabitsDetailScreen({ habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, cards, setCards, stats, setStats, meditationSettings, bodyWorkouts, setBodyWorkouts, bodyExercises, pendingHabitId, onPendingHandled,
   bodyRoutines, setBodyRoutines }) {
   const [detailId, setDetailId] = useState(null);
   // Separate from detailId on purpose: detailId controls the detail
@@ -100,6 +119,12 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
 
   const [videoOpen, setVideoOpen] = useState(false);
   const [meditationOpen, setMeditationOpen] = useState(false);
+  // "Menu" first (style/background/sound/voice, fresh pick every time
+  // per the user's "depending on my mood im not stuck to one form") then
+  // "session" once Begin is tapped. Reset to 'menu' every time the
+  // meditation Modal opens, whatever stage it was left on last close.
+  const [meditationStage, setMeditationStage] = useState('menu');
+  const [meditationChoice, setMeditationChoice] = useState(null);
   const [workoutOpen, setWorkoutOpen] = useState(false);
   const [selfCareOpen, setSelfCareOpen] = useState(false);
   const [readingOpen, setReadingOpen] = useState(false);
@@ -113,8 +138,73 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
   const [openTechId, setOpenTechId] = useState(null);
   const [practiceTech, setPracticeTech] = useState(null); // { habit, technique } or null
 
+  // Difficulty/consistency: gate a session behind a quick mood pick when
+  // the habit has it turned on, then hand the resulting effective level
+  // to whichever session screen opens. sessionDifficulty is keyed by
+  // habit id so switching between habits never bleeds one's level into
+  // another's.
+  const [moodGate, setMoodGate] = useState(null); // { habit, open: () => void } or null
+  const [sessionDifficulty, setSessionDifficulty] = useState({}); // { [habitId]: difficultyResult }
+
+  function openSession(habit, openFn) {
+    setActiveHabitId(habit.id);
+    if (habit.difficulty && habit.difficulty.enabled) {
+      setMoodGate({ habit, open: openFn });
+    } else {
+      openFn();
+    }
+  }
+
+  function openMeditationMenu() {
+    setMeditationStage('menu');
+    setMeditationOpen(true);
+  }
+
+  function resolveMood(moodKey) {
+    if (!moodGate) return;
+    const { habit, open } = moodGate;
+    if (habit.difficulty && habit.difficulty.enabled) {
+      setSessionDifficulty((prev) => ({ ...prev, [habit.id]: getSessionDifficulty(habit, moodKey) }));
+    }
+    setMoodGate(null);
+    open();
+  }
+
+  function skipMood() {
+    if (!moodGate) return;
+    moodGate.open();
+    setMoodGate(null);
+  }
+
+  function toggleDifficulty(habit) {
+    setHabits((prev) =>
+      prev.map((h) =>
+        h.id === habit.id
+          ? { ...h, difficulty: { ...defaultDifficulty(), ...(h.difficulty || {}), enabled: !(h.difficulty && h.difficulty.enabled) } }
+          : h
+      )
+    );
+  }
+
   const detailHabit = habits.find((h) => h.id === detailId);
   const activeHabit = habits.find((h) => h.id === activeHabitId);
+
+  // Land directly on the technique to actually practice, not a
+  // collapsed list you have to drill into twice (rank, then technique) -
+  // "do the habit on the screen" means the video/mark-mastered UI should
+  // already be open when you get here.
+  useEffect(() => {
+    if (detailHabit && detailHabit.sessionType === 'cardistry') {
+      const mastered = detailHabit.mastered || {};
+      const rank = CARDISTRY_RANKS[currentRankIndex(mastered)];
+      if (rank) {
+        setOpenRankId(rank.id);
+        const nextTech = rank.techniques.find((t) => !mastered[t.id]);
+        setOpenTechId(nextTech ? nextTech.id : null);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailId]);
 
   // Arriving from a Calendar tap: open that habit's session straight away.
   useEffect(() => {
@@ -123,10 +213,10 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
     if (!h) return;
     setActiveHabitId(h.id);
     if (h.linkedContent && h.text !== 'Chess') setVideoOpen(true);
-    else if (h.sessionType === 'workout') setWorkoutOpen(true);
+    else if (h.sessionType === 'workout') openSession(h, () => setWorkoutOpen(true));
     else if (h.sessionType === 'reading') setReadingOpen(true);
     else if (h.sessionType === 'selfcare') setSelfCareOpen(true);
-    else if (h.sessionType === 'breathing') setMeditationOpen(true);
+    else if (h.sessionType === 'breathing') openSession(h, openMeditationMenu);
     else setDetailId(h.id);
     if (onPendingHandled) onPendingHandled();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -287,8 +377,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
         addedAt: Date.now(),
         linkedContent: null,
         sessionType: 'workout',
-        workoutLevel: 0,
-        workoutLevelReps: 0,
+        exerciseState: {},
+        unlockedPatterns: defaultUnlockedPatterns(),
         scheduledNotifications: [],
       },
     ]);
@@ -339,6 +429,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
       setHero,
       applyXPDelta,
       HABIT_POINTS,
+      cards,
+      setStats,
     });
     if (newDone) {
       cancelTodayForHabit(habit, todayDateKey()).then((remaining) => {
@@ -489,6 +581,60 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
     setHabitGrowth(habit, (g) => logGrowthFeel(g, feel, todayDateKey(), completions));
   }
 
+  // Editing today's workout blocks: custom rep/hold targets by exercise
+  // name, and which unlocked bonus exercises to leave out entirely (e.g.
+  // pull-ups with no bar available). This is the "customize the actual
+  // exercises" layer that Growing Target doesn't cover - that one only
+  // ever adjusts a single number, not the workout's exercise list.
+  const [exerciseEditOpen, setExerciseEditOpen] = useState(false);
+  const [exerciseDraft, setExerciseDraft] = useState({}); // { [name]: '12' }
+  const [exerciseBlocksDraft, setExerciseBlocksDraft] = useState([]); // [{ name, mode, min, max }] for rendering the form
+
+  function openExerciseEdit(habit) {
+    const { template: spec } = buildWorkoutTemplate({ ...habit, exerciseOverrides: {} });
+    const overrides = habit.exerciseOverrides || {};
+    const draft = {};
+    spec.blocks.forEach((b) => {
+      const fallback = b.mode === 'time' ? b.seconds : b.target;
+      draft[b.name] = String(overrides[b.name] != null ? overrides[b.name] : fallback);
+    });
+    setExerciseDraft(draft);
+    setExerciseBlocksDraft(spec.blocks.map((b) => ({ name: b.name, mode: b.mode })));
+    setExerciseEditOpen(true);
+  }
+
+  function saveExerciseEdits(habit) {
+    const overrides = {};
+    Object.keys(exerciseDraft).forEach((name) => {
+      const n = Number(exerciseDraft[name]);
+      if (!Number.isNaN(n) && n > 0) overrides[name] = n;
+    });
+    setHabits((prev) => prev.map((h) => (h.id === habit.id ? { ...h, exerciseOverrides: overrides } : h)));
+    setExerciseEditOpen(false);
+  }
+
+  function resetExerciseEdits(habit) {
+    setHabits((prev) => prev.map((h) => (h.id === habit.id ? { ...h, exerciseOverrides: {} } : h)));
+    setExerciseEditOpen(false);
+  }
+
+  // Pull/Hinge/Row are opt-in, manual, never auto-added - see
+  // workoutTracks.js OPTIONAL_KEYS for why they're kept out of the
+  // mood-gated basic path.
+  function toggleOptionalPattern(habit, key) {
+    setHabits((prev) =>
+      prev.map((h) => {
+        if (h.id !== habit.id) return h;
+        const current = h.unlockedPatterns || [];
+        const on = current.includes(key);
+        return { ...h, unlockedPatterns: on ? current.filter((k) => k !== key) : [...current, key] };
+      })
+    );
+  }
+
+  const [roadmapOpen, setRoadmapOpen] = useState(false);
+  const [optionalOpen, setOptionalOpen] = useState(false);
+
   async function fetchAndLink() {
     if (!linkUrl.trim()) {
       setLinkError('Paste a playlist link first.');
@@ -607,11 +753,24 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
     setHabits((prev) =>
       prev.map((h) => {
         if (h.id !== habit.id) return h;
-        const nextReps = (h.workoutLevelReps || 0) + 1;
-        if (nextReps >= REPS_TO_ADVANCE && (h.workoutLevel || 0) < WORKOUT_MAX_LEVEL) {
-          return { ...h, workoutLevel: (h.workoutLevel || 0) + 1, workoutLevelReps: 0 };
+        const { exerciseState, unlockedPatterns, events, patternToUnlock } = evaluateAllTracks(h, result.entries);
+
+        const parts = [];
+        events.forEach((ev) => {
+          parts.push(`Moving up to: ${ev.graduated}`);
+        });
+        if (patternToUnlock) {
+          const label = BASIC_LABELS[patternToUnlock] || patternToUnlock;
+          parts.push(`New exercise added: ${label}`);
         }
-        return { ...h, workoutLevelReps: Math.min(nextReps, REPS_TO_ADVANCE) };
+        if (parts.length) {
+          // Fire after this update settles rather than mid-render.
+          setTimeout(() => {
+            Alert.alert('Nice work', parts.join('\n\n'));
+          }, 300);
+        }
+
+        return { ...h, exerciseState, unlockedPatterns };
       })
     );
     if (!alreadyDoneToday) doToggleToday(habit);
@@ -673,7 +832,7 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
   return (
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={shared.container}>
-        <Text style={shared.h1}>Habits</Text>
+        <PageHeader theme={HABITS_THEME} title="Habits" />
         <Text style={shared.tagline}>
           Streaks, schedules, and content-linked habits in one place
         </Text>
@@ -700,8 +859,7 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                     setActiveHabitId(h.id);
                     setVideoOpen(true);
                   } else if (h.sessionType === 'workout') {
-                    setActiveHabitId(h.id);
-                    setWorkoutOpen(true);
+                    openSession(h, () => setWorkoutOpen(true));
                   } else if (h.sessionType === 'reading') {
                     setActiveHabitId(h.id);
                     setReadingOpen(true);
@@ -711,8 +869,7 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                     setActiveHabitId(h.id);
                     setSelfCareOpen(true);
                   } else if (h.sessionType === 'breathing') {
-                    setActiveHabitId(h.id);
-                    setMeditationOpen(true);
+                    openSession(h, openMeditationMenu);
                   } else {
                     setDetailId(h.id);
                   }
@@ -818,6 +975,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                   />
                 ) : null}
 
+                {detailHabit.sessionType !== 'workout' ? (
+                  <>
                 <Text style={[styles.label, { marginTop: 20 }]}>Growing Target</Text>
                 {(() => {
                   const growth = detailHabit.growth;
@@ -950,6 +1109,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                       <Text style={{ color: DIM, fontSize: 13 }}>Cancel</Text>
                     </TouchableOpacity>
                   </View>
+                ) : null}
+                  </>
                 ) : null}
 
                 {detailHabit.linkedContent || detailHabit.sessionType === 'breathing' || detailHabit.sessionType === 'workout' || detailHabit.sessionType === 'selfcare' || detailHabit.sessionType === 'reading' ? (
@@ -1259,27 +1420,78 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                   </>
                 ) : detailHabit.sessionType === 'workout' ? (
                   <>
-                    <Text style={[styles.label, { marginTop: 20 }]}>Today's Program</Text>
+                    <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16 }} />
+                    <Text style={[styles.label, { marginTop: 0 }]}>Today's Session</Text>
+                    <Text style={styles.readingLinkNote}>
+                      One exercise at a time - start at 1, grow by 1 each session. 100 total reps
+                      earns the next variation (or the next exercise).
+                    </Text>
                     {(() => {
-                      const spec = workoutLevelSpec(detailHabit.workoutLevel || 0);
-                      const repsIn = detailHabit.workoutLevelReps || 0;
-                      return (
-                        <>
-                          <View style={styles.currentVideoCard}>
-                            <Text style={styles.currentVideoLabel}>
-                              LEVEL {spec.level + 1} OF {WORKOUT_TEMPLATES.length}
+                      const unlocked = detailHabit.unlockedPatterns && detailHabit.unlockedPatterns.length
+                        ? detailHabit.unlockedPatterns
+                        : defaultUnlockedPatterns();
+                      const stateMap = normalizeExerciseState(detailHabit.exerciseState);
+                      return unlocked.map((key) => {
+                        const state = stateMap[key];
+                        const stage = currentStage(key, state.stageIndex);
+                        const unit = stage.mode === 'time' ? 's' : ' reps';
+                        return (
+                          <View key={key} style={styles.currentVideoCard}>
+                            <Text style={styles.currentVideoLabel}>{(BASIC_LABELS[key] || key).toUpperCase()}</Text>
+                            <Text style={styles.currentVideoTitle}>{stage.name}</Text>
+                            <Text style={styles.rankBlurb}>
+                              {state.target}{unit} today · {state.cumulative}/{REP_UNLOCK_THRESHOLD} toward next
                             </Text>
-                            <Text style={styles.currentVideoTitle}>{spec.template.name}</Text>
-                            <Text style={styles.rankBlurb}>{spec.template.subtitle}</Text>
                           </View>
-                          <Text style={styles.readingLinkNote}>
-                            {spec.isMax
-                              ? 'Top level reached — this is the ladder\'s hardest session.'
-                              : `${repsIn}/${REPS_TO_ADVANCE} completions at this level — level up after ${REPS_TO_ADVANCE - repsIn} more.`}
-                          </Text>
-                        </>
-                      );
+                        );
+                      });
                     })()}
+
+                    <TouchableOpacity
+                      style={{ alignItems: 'center', paddingVertical: 10, marginTop: 10 }}
+                      onPress={() => setRoadmapOpen((r) => !r)}
+                    >
+                      <Text style={styles.clearTimeBtnText}>
+                        {roadmapOpen ? 'Hide full progression' : 'See every variation, per pattern'}
+                      </Text>
+                    </TouchableOpacity>
+                    {roadmapOpen ? (
+                      <View style={styles.growthFormCard}>
+                        {(() => {
+                          const stateMap = normalizeExerciseState(detailHabit.exerciseState);
+                          const sections = [...BASIC_ORDER, ...OPTIONAL_KEYS].map((key) => ({
+                            key,
+                            list: TRACKS[key] || CORE_TRACKS[key],
+                            state: stateMap[key],
+                          }));
+                          return sections.map(({ key, list, state }) => (
+                            <View key={key} style={{ marginBottom: 14 }}>
+                              <Text style={styles.label}>{BASIC_LABELS[key] || key}</Text>
+                              {list.map((stg, i) => (
+                                <View key={stg.id} style={styles.historyRow}>
+                                  <Text style={styles.historyDate}>
+                                    {i + 1}. {stg.name}
+                                  </Text>
+                                  <Text
+                                    style={[
+                                      styles.historySeconds,
+                                      i === state.stageIndex ? { color: GOLD } : null,
+                                    ]}
+                                  >
+                                    {i === state.stageIndex
+                                      ? `Current — ${state.target}${stg.mode === 'time' ? 's' : ' reps'}`
+                                      : i < state.stageIndex
+                                      ? 'Already past'
+                                      : 'Not yet'}
+                                  </Text>
+                                </View>
+                              ))}
+                            </View>
+                          ));
+                        })()}
+                      </View>
+                    ) : null}
+
                     <View style={styles.statsRow}>
                       <View style={styles.statBox}>
                         <Text style={styles.statNum}>
@@ -1287,11 +1499,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                         </Text>
                         <Text style={styles.statLabel}>sessions logged</Text>
                       </View>
-                      <View style={styles.statBox}>
-                        <Text style={styles.statNum}>{habitStreak(detailHabit)}</Text>
-                        <Text style={styles.statLabel}>day streak</Text>
-                      </View>
                     </View>
+
                     <TouchableOpacity
                       style={styles.watchBtn}
                       onPress={() => {
@@ -1302,6 +1511,83 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                     >
                       <Text style={styles.watchBtnText}>🏋️ Begin Workout</Text>
                     </TouchableOpacity>
+
+                    <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16 }} />
+
+                    <Text style={styles.label}>Advanced</Text>
+                    <TouchableOpacity
+                      style={{ alignItems: 'center', paddingVertical: 8 }}
+                      onPress={() => setOptionalOpen((o) => !o)}
+                    >
+                      <Text style={styles.clearTimeBtnText}>
+                        {optionalOpen ? 'Hide optional exercises' : "Once you're ready (Pull, Hinge, Row)"}
+                      </Text>
+                    </TouchableOpacity>
+                    {optionalOpen ? (
+                      <View style={styles.growthFormCard}>
+                        <Text style={styles.readingLinkNote}>
+                          Real skills of their own - kept out of the automatic path since you're
+                          after the basics for now. Turn on whenever you're ready.
+                        </Text>
+                        {OPTIONAL_KEYS.map((key) => {
+                          const on = (detailHabit.unlockedPatterns || []).includes(key);
+                          return (
+                            <TouchableOpacity
+                              key={key}
+                              style={styles.optionalRow}
+                              onPress={() => toggleOptionalPattern(detailHabit, key)}
+                            >
+                              <Text style={styles.optionalRowText}>{BASIC_LABELS[key]}</Text>
+                              <Text style={[styles.optionalRowToggle, on && { color: GOLD }]}>
+                                {on ? 'On' : 'Off'}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+
+                    <TouchableOpacity
+                      style={{ alignItems: 'center', paddingVertical: 8 }}
+                      onPress={() => (exerciseEditOpen ? setExerciseEditOpen(false) : openExerciseEdit(detailHabit))}
+                    >
+                      <Text style={styles.clearTimeBtnText}>
+                        {exerciseEditOpen ? 'Close exercise editor' : 'Edit exercise numbers'}
+                      </Text>
+                    </TouchableOpacity>
+                    {exerciseEditOpen ? (
+                      <View style={styles.growthFormCard}>
+                        <Text style={styles.readingLinkNote}>
+                          Override today's target for any exercise.
+                        </Text>
+                        {exerciseBlocksDraft.map((b) => (
+                          <View key={b.name} style={{ marginTop: 14 }}>
+                            <Text style={styles.label}>
+                              {b.name} {b.mode === 'time' ? '(seconds)' : '(reps)'}
+                            </Text>
+                            <TextInput
+                              style={styles.growthInput}
+                              value={exerciseDraft[b.name] || ''}
+                              onChangeText={(v) => setExerciseDraft((d) => ({ ...d, [b.name]: v }))}
+                              keyboardType="numeric"
+                              placeholderTextColor={DIM}
+                            />
+                          </View>
+                        ))}
+                        <TouchableOpacity
+                          style={[styles.watchBtn, { marginTop: 16 }]}
+                          onPress={() => saveExerciseEdits(detailHabit)}
+                        >
+                          <Text style={styles.watchBtnText}>Save</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={{ alignItems: 'center', paddingVertical: 10 }}
+                          onPress={() => resetExerciseEdits(detailHabit)}
+                        >
+                          <Text style={[styles.clearTimeBtnText, { color: ROSE }]}>Reset to defaults</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
                   </>
                 ) : detailHabit.sessionType === 'breathing' ? (
                   <>
@@ -1365,7 +1651,7 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                             onPress={() => {
                               setActiveHabitId(detailHabit.id);
                               setDetailId(null);
-                              setMeditationOpen(true);
+                              openMeditationMenu();
                             }}
                           >
                             <Text style={styles.watchBtnText}>🧘 Begin Session</Text>
@@ -1379,6 +1665,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                         </>
                       );
                     })()}
+
+                    <MeditationGrowthGraph habit={detailHabit} />
                   </>
                 ) : detailHabit.text === 'Chess' ? (
                   <>
@@ -1595,10 +1883,11 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
       >
         {workoutOpen && activeHabit ? (
           <GuidedWorkoutSession
-            key={`${activeHabitId}-${activeHabit.workoutLevel || 0}`}
-            template={workoutLevelSpec(activeHabit.workoutLevel || 0).template}
+            key={`${activeHabitId}-${JSON.stringify(activeHabit.exerciseState)}-${JSON.stringify(activeHabit.unlockedPatterns)}`}
+            template={buildWorkoutTemplate(activeHabit).template}
             onComplete={handleWorkoutComplete}
             onExit={() => setWorkoutOpen(false)}
+            sessionDifficulty={sessionDifficulty[activeHabitId] || null}
           />
         ) : null}
       </Modal>
@@ -1731,48 +2020,109 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
         ) : null}
       </Modal>
 
-      {/* Meditation session */}
+      {/* Meditation: menu (style/background/sound/voice) first, then the
+          matching session. "Rather than jumping to [one method]... this
+          way depending on my mood im not stuck to one form" - picked
+          fresh each time, with the last choice pre-selected via
+          activeHabit.meditationChoice as a convenience default. */}
       <Modal
         visible={meditationOpen}
         animationType="slide"
         onRequestClose={() => setMeditationOpen(false)}
       >
         <View style={styles.videoScreen}>
-          <View style={styles.videoHeader}>
-            <Text style={styles.videoHeaderTitle}>Meditation</Text>
-            <TouchableOpacity onPress={() => setMeditationOpen(false)}>
-              <Text style={styles.videoCloseX}>✕</Text>
-            </TouchableOpacity>
-          </View>
-          {meditationOpen ? (
-            <MeditationSession
-              key={activeHabitId}
-              settings={meditationSettings}
+          {meditationStage === 'session' ? (
+            <View style={styles.videoHeader}>
+              <Text style={styles.videoHeaderTitle}>Meditation</Text>
+              <TouchableOpacity onPress={() => setMeditationOpen(false)}>
+                <Text style={styles.videoCloseX}>✕</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
+          {meditationOpen && meditationStage === 'menu' ? (
+            <MeditationMenu
               levelIndex={activeHabit ? activeHabit.meditationLevel || 0 : 0}
-              streakInfo={
-                activeHabit
-                  ? {
-                      daysToNext: Math.max(
-                        1,
-                        DAYS_PER_LEVEL -
-                          (habitStreak(activeHabit) - (activeHabit.levelStreakBase || 0))
-                      ),
-                    }
-                  : null
-              }
-              onComplete={(holdSeconds) => {
-                handleMeditationComplete(holdSeconds);
+              initial={(activeHabit && activeHabit.meditationChoice) || meditationChoice}
+              onBegin={(choice) => {
+                setMeditationChoice(choice);
+                if (activeHabit) {
+                  setHabits((prev) =>
+                    prev.map((h) => (h.id === activeHabit.id ? { ...h, meditationChoice: choice } : h))
+                  );
+                }
+                setMeditationStage('session');
               }}
+              onClose={() => setMeditationOpen(false)}
             />
+          ) : null}
+
+          {meditationOpen && meditationStage === 'session' && meditationChoice ? (
+            (() => {
+              const background = meditationBackgroundById(meditationChoice.backgroundId);
+              const streakInfo = activeHabit
+                ? {
+                    daysToNext: Math.max(
+                      1,
+                      DAYS_PER_LEVEL -
+                        (habitStreak(activeHabit) - (activeHabit.levelStreakBase || 0))
+                    ),
+                  }
+                : null;
+              const levelIndex = activeHabit ? activeHabit.meditationLevel || 0 : 0;
+              const sharedProps = {
+                settings: meditationSettings,
+                levelIndex,
+                background,
+                soundId: meditationChoice.soundId,
+                voiceOn: meditationChoice.voiceOn,
+                onComplete: (metricSeconds) => handleMeditationComplete(metricSeconds),
+              };
+              if (meditationChoice.styleId === 'box') {
+                return <BoxBreathingSession key={activeHabitId} {...sharedProps} />;
+              }
+              if (meditationChoice.styleId === 'bodyscan') {
+                return <BodyScanSession key={activeHabitId} {...sharedProps} />;
+              }
+              return <MeditationSession key={activeHabitId} {...sharedProps} streakInfo={streakInfo} />;
+            })()
           ) : null}
         </View>
       </Modal>
+
+      <MoodCheckIn
+        visible={!!moodGate}
+        habitText={moodGate ? moodGate.habit.text : ''}
+        onSelect={resolveMood}
+        onCancel={skipMood}
+      />
 
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  optionalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  optionalRowText: { color: INK, fontSize: 14.5, fontWeight: '600' },
+  optionalRowToggle: { color: DIM, fontSize: 13, fontWeight: '700' },
+  paceChip: {
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginRight: 8,
+  },
+  paceChipActive: { backgroundColor: GOLD, borderColor: GOLD },
+  paceChipText: { color: DIM, fontSize: 13, fontWeight: '700' },
+  paceChipTextActive: { color: '#1a1512' },
   feelBtn: {
     flex: 1,
     backgroundColor: '#1f1a15',

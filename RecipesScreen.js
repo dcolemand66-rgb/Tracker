@@ -15,6 +15,15 @@ import * as ImagePicker from 'expo-image-picker';
 import { pickCompressedImage } from './imagePicker';
 import { runOcr } from './ocrHelper';
 import { fetchRecipeFromUrl, sanitizeRecipeText, prettifyLeadingQuantity } from './recipeImport';
+import {
+  extractYouTubeId,
+  videoPlatform,
+  videoPlatformLabel,
+  fetchVideoOEmbed,
+} from './videoRecipeHelper';
+import { WebView } from 'react-native-webview';
+import { RECIPES_THEME } from './pageThemes';
+import PageHeader from './PageHeader';
 import HomesteadScreen from './HomesteadScreen';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 
@@ -24,6 +33,9 @@ const INV_CATEGORIES = ['Seasonings', 'Meats', 'Pantry', 'Produce', 'Dairy', 'Ot
 // (looks like https://kroger-price-lookup.YOUR-SUBDOMAIN.workers.dev).
 const KROGER_WORKER_URL = 'https://kroger-price-lookup.demarcus3456.workers.dev';
 const PRICES_WORKER_URL = 'https://prices-api-lookup.demarcus3456.workers.dev';
+// Placeholder - swap in the real Worker URL once `wrangler deploy` finishes
+// for transcript-worker/ (looks like https://recipe-transcript-worker.YOUR-SUBDOMAIN.workers.dev).
+const TRANSCRIPT_WORKER_URL = 'https://recipe-transcript-worker.demarcus3456.workers.dev';
 
 // Limited to stores actually shopped at. Matched by substring against
 // seller name/URL since PricesAPI's naming isn't guaranteed to be exact
@@ -352,9 +364,116 @@ export default function RecipesScreen({
   const [scanError, setScanError] = useState('');
 
   const [importing, setImporting] = useState(false);
+  const [fetchingVideoInfo, setFetchingVideoInfo] = useState(false);
+  const [extractingRecipe, setExtractingRecipe] = useState(false);
 
   function emptyDraft() {
-    return { title: '', image: null, notes: '', sourceUrl: '', ingredients: [] };
+    return { title: '', image: null, notes: '', sourceUrl: '', videoUrl: '', ingredients: [] };
+  }
+
+  // Pulls in title + thumbnail from a pasted YouTube link automatically
+  // (Facebook/TikTok/Instagram don't offer this without auth, so those
+  // just keep whatever the person typed and this is a no-op for them).
+  async function fetchVideoInfo() {
+    const url = draft.videoUrl.trim();
+    if (!url) {
+      Alert.alert('Paste a video link first', 'Add a YouTube or Facebook Reel link, then tap this.');
+      return;
+    }
+    setFetchingVideoInfo(true);
+    try {
+      const info = await fetchVideoOEmbed(url);
+      if (info) {
+        setDraft((d) => ({
+          ...d,
+          title: d.title.trim() ? d.title : info.title || d.title,
+          image: d.image || info.image || d.image,
+        }));
+        Alert.alert('Got it', 'Title and thumbnail pulled in from the video.');
+      } else {
+        Alert.alert(
+          'Add the details yourself',
+          "Couldn't auto-fetch details from this link (Facebook/TikTok/Instagram don't support that yet) - give it a title and you're set. The video itself covers the rest."
+        );
+      }
+    } finally {
+      setFetchingVideoInfo(false);
+    }
+  }
+
+  // Pulls the video's real caption transcript and turns it into an
+  // actual ingredients list + numbered steps, so a recipe found in a
+  // video never has to be retyped by hand. Only YouTube exposes a
+  // public captions endpoint this can read - Facebook/TikTok/Instagram
+  // don't, so those get converted to a YouTube upload first (that's on
+  // the person, not this app) and pasted in as a YouTube link instead.
+  function extractRecipeFromVideo() {
+    const url = draft.videoUrl.trim();
+    if (!url) {
+      Alert.alert('Paste a video link first', 'Add a YouTube link in the field above, then tap this.');
+      return;
+    }
+    if (videoPlatform(url) !== 'youtube') {
+      Alert.alert(
+        'YouTube links only, for now',
+        'Pulling real text out of a video only works with YouTube’s captions. Convert the Facebook/TikTok/Instagram video to a YouTube upload (unlisted is fine) and paste that link here instead.'
+      );
+      return;
+    }
+    if (bulkIngredients.trim() || draft.notes.trim()) {
+      Alert.alert(
+        'Replace current content?',
+        'This will replace your current ingredient list and instructions with what gets pulled from the video.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue', onPress: () => doExtractRecipeFromVideo(url) },
+        ]
+      );
+    } else {
+      doExtractRecipeFromVideo(url);
+    }
+  }
+
+  async function doExtractRecipeFromVideo(url) {
+    setExtractingRecipe(true);
+    try {
+      const res = await fetch(`${TRANSCRIPT_WORKER_URL}?url=${encodeURIComponent(url)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        Alert.alert('Could not get the recipe', data.error || 'Something went wrong reading that video.');
+        return;
+      }
+      if (data.structured) {
+        setDraft((d) => ({
+          ...d,
+          title: d.title.trim() ? d.title : data.title || d.title,
+        }));
+        if (data.ingredients && data.ingredients.length) {
+          setBulkIngredients(data.ingredients.join('\n'));
+        }
+        if (data.steps && data.steps.length) {
+          setDraft((d) => ({ ...d, notes: data.steps.map((s, i) => `${i + 1}. ${s}`).join('\n') }));
+        }
+        Alert.alert('Recipe pulled from video', 'Review the ingredients and steps below, then save.');
+      } else {
+        // Degraded response: no AI cleanup available, just the raw
+        // spoken transcript - still saves typing it all out by hand.
+        setDraft((d) => ({
+          ...d,
+          title: d.title.trim() ? d.title : data.title || d.title,
+          notes: data.transcript || d.notes,
+        }));
+        Alert.alert(
+          'Raw transcript pulled in',
+          (data.warning || 'AI cleanup isn’t set up yet.') +
+            ' The full transcript is in Instructions/Notes - trim it down to the actual steps.'
+        );
+      }
+    } catch (e) {
+      Alert.alert('Could not reach the transcript service', 'Check your connection and try again.');
+    } finally {
+      setExtractingRecipe(false);
+    }
   }
 
   const detailRecipe = recipes.find((r) => r.id === detailId);
@@ -423,6 +542,7 @@ export default function RecipesScreen({
       image: r.image || null,
       notes: r.notes || '',
       sourceUrl: r.sourceUrl || '',
+      videoUrl: r.videoUrl || '',
       ingredients: r.ingredients || [],
     });
     setBulkIngredients((r.ingredients || []).map((i) => i.text).join('\n'));
@@ -459,6 +579,7 @@ export default function RecipesScreen({
       image: draft.image,
       notes: draft.notes.trim(),
       sourceUrl: draft.sourceUrl.trim(),
+      videoUrl: draft.videoUrl.trim(),
       ingredients,
       addedAt: editingId
         ? recipes.find((r) => r.id === editingId)?.addedAt || Date.now()
@@ -787,7 +908,7 @@ export default function RecipesScreen({
         />
       ) : (
       <ScrollView contentContainerStyle={shared.container}>
-        <Text style={shared.h1}>Recipes</Text>
+        <PageHeader theme={RECIPES_THEME} title="Recipes" />
 
         {subTab === 'recipes' ? (
           recipes.length === 0 ? (
@@ -878,6 +999,7 @@ export default function RecipesScreen({
                           {r.title}
                         </Text>
                         <Text style={shared.tagline}>
+                          {r.videoUrl ? '🎥 ' : ''}
                           {real.length} ingredient{real.length === 1 ? '' : 's'}
                           {missing > 0 ? ` • ${missing} missing` : real.length ? ' • have everything' : ''}
                         </Text>
@@ -929,7 +1051,7 @@ export default function RecipesScreen({
 
       {subTab !== 'homestead' ? (
         <TouchableOpacity
-          style={styles.fab}
+          style={[styles.fab, { backgroundColor: RECIPES_THEME.accent, shadowColor: RECIPES_THEME.accent }]}
           onPress={subTab === 'recipes' ? openAdd : openGroAdd}
         >
           <Text style={styles.fabText}>+</Text>
@@ -965,8 +1087,45 @@ export default function RecipesScreen({
                   </TouchableOpacity>
                 ) : null}
 
+                {detailRecipe.videoUrl ? (() => {
+                  const platform = videoPlatform(detailRecipe.videoUrl);
+                  const ytId = platform === 'youtube' ? extractYouTubeId(detailRecipe.videoUrl) : null;
+                  return (
+                    <View style={styles.videoBlock}>
+                      <Text style={styles.infoLabel}>🎥 Recipe Video</Text>
+                      {ytId ? (
+                        <View style={styles.videoPlayerWrap}>
+                          <WebView
+                            source={{ uri: `https://www.youtube.com/embed/${ytId}?playsinline=1&rel=0` }}
+                            style={styles.videoPlayer}
+                            allowsFullscreenVideo
+                            javaScriptEnabled
+                            domStorageEnabled
+                            mediaPlaybackRequiresUserAction={false}
+                          />
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={[styles.saveBtn, styles.saveBtnAlt]}
+                          onPress={() => Linking.openURL(detailRecipe.videoUrl)}
+                        >
+                          <Text style={[styles.saveBtnText, styles.saveBtnTextAlt]}>
+                            ▶ Watch on {videoPlatformLabel(platform)} ↗
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                      <Text style={styles.videoHint}>
+                        This recipe follows the video - cook along and only jot down
+                        anything you want to remember below.
+                      </Text>
+                    </View>
+                  );
+                })() : null}
+
                 {(detailRecipe.ingredients || []).length === 0 ? (
-                  <Text style={shared.tagline}>No ingredients listed</Text>
+                  detailRecipe.videoUrl ? null : (
+                    <Text style={shared.tagline}>No ingredients listed</Text>
+                  )
                 ) : (
                   <>
                     {(() => {
@@ -1114,9 +1273,49 @@ export default function RecipesScreen({
                 </Text>
               </TouchableOpacity>
 
+              <View style={styles.videoInputBlock}>
+                <Text style={styles.label}>🎥 Recipe Video (optional)</Text>
+                <Text style={[shared.tagline, { marginTop: -2, marginBottom: 6 }]}>
+                  Most recipes people find are a YouTube video or a Facebook
+                  Reel, not text. Paste the link and skip typing the recipe
+                  out by hand — ingredients and notes below are optional
+                  once a video is attached.
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={draft.videoUrl}
+                  onChangeText={(v) => setDraft((d) => ({ ...d, videoUrl: v }))}
+                  placeholder="https://youtube.com/... or facebook.com/reel/..."
+                  placeholderTextColor="#9aa5b1"
+                  autoCapitalize="none"
+                />
+                <TouchableOpacity
+                  style={[styles.saveBtn, styles.saveBtnAlt, { marginTop: 8 }]}
+                  disabled={fetchingVideoInfo}
+                  onPress={fetchVideoInfo}
+                >
+                  <Text style={[styles.saveBtnText, styles.saveBtnTextAlt]}>
+                    {fetchingVideoInfo ? 'Fetching...' : '⬇️ Fetch Title & Thumbnail'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.saveBtn, { marginTop: 8 }]}
+                  disabled={extractingRecipe}
+                  onPress={extractRecipeFromVideo}
+                >
+                  <Text style={styles.saveBtnText}>
+                    {extractingRecipe ? 'Reading the video...' : '📝 Get Recipe Text from Video'}
+                  </Text>
+                </TouchableOpacity>
+                <Text style={[shared.tagline, { marginTop: 6 }]}>
+                  Reads the video's captions and turns them into a real
+                  ingredients list + steps — YouTube only for now.
+                </Text>
+              </View>
+
               <Text style={styles.label}>
                 Ingredients (one per line — end a line with ":" to make it a
-                section header)
+                section header) {draft.videoUrl.trim() ? '— optional with a video attached' : ''}
               </Text>
               <TextInput
                 style={[styles.input, { height: 140, textAlignVertical: 'top' }]}
@@ -1135,7 +1334,9 @@ export default function RecipesScreen({
                 </Text>
               </TouchableOpacity>
 
-              <Text style={styles.label}>Instructions / Notes</Text>
+              <Text style={styles.label}>
+                Instructions / Notes {draft.videoUrl.trim() ? '(optional — the video covers this)' : ''}
+              </Text>
               <TextInput
                 style={[styles.input, { height: 100, textAlignVertical: 'top' }]}
                 value={draft.notes}
@@ -1880,6 +2081,25 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   infoValue: { fontSize: 14, color: INK, lineHeight: 20 },
+  videoBlock: { marginTop: 10, marginBottom: 6 },
+  videoPlayerWrap: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+  },
+  videoPlayer: { flex: 1, backgroundColor: '#000' },
+  videoHint: { fontSize: 12, color: DIM, marginTop: 8, lineHeight: 16 },
+  videoInputBlock: {
+    marginTop: 10,
+    marginBottom: 4,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    backgroundColor: CARD,
+  },
   noteStepRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
   noteStepNum: {
     width: 22,

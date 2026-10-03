@@ -656,11 +656,60 @@ export function guideStepCount(guide) {
   return guide.phases.reduce((n, p) => n + (p.steps ? p.steps.length : 1), 0);
 }
 
+import { COURSES, nextLessonFor } from './courses';
+
 export function guideDoneCount(guide, progress) {
   const p = progress || {};
   return guide.phases.reduce((n, ph) => {
     if (ph.steps) return n + ph.steps.filter((st) => p[st.id] && p[st.id].done).length;
     return n + ((p[ph.id] || {}).buildDone ? 1 : 0);
   }, 0);
+}
+
+// The single next incomplete step for a guide, walking phases in order -
+// same "one step, not the whole list" idea as firstStepPerRoadmap in
+// habitUtils.js, just for the authored guides (Farming, Robotics) rather
+// than user-created cards/goals. Course-based phases (Robotics) report
+// the actual next lesson title, not just the phase name, so "what am I
+// on" is answered without opening the course - see courses.js.
+export function firstStepForGuide(guide, progress) {
+  const p = progress || {};
+  for (const ph of guide.phases) {
+    if (ph.steps) {
+      const next = ph.steps.find((st) => !(p[st.id] && p[st.id].done));
+      if (next) return { text: next.title, phaseId: ph.id, stepId: next.id, phaseName: ph.name };
+    } else if (ph.course && COURSES[ph.course]) {
+      const course = COURSES[ph.course];
+      const lesson = nextLessonFor(course, p);
+      if (lesson) {
+        const parts = lesson.parts || [];
+        const lp = (p[`course_${course.id}`] || {})[lesson.id] || {};
+        const videoLocked = !!lesson.video && !lp.videoWatched;
+        const partsDone = parts.filter((pt) => (lp.parts || {})[pt.id]).length;
+        const nextPart = videoLocked ? null : parts.find((pt) => !(lp.parts || {})[pt.id]);
+        return {
+          text: lesson.title,
+          // What's actually next, one level more specific than the
+          // lesson title - which part you're on, or that the video
+          // needs watching first before any part unlocks.
+          nextPartText: videoLocked ? 'Watch the video to unlock sections' : nextPart ? nextPart.title : null,
+          phaseId: ph.id,
+          stepId: lesson.id,
+          phaseName: ph.name,
+          lessonDay: lesson.day,
+          courseId: course.id,
+          lessonId: lesson.id,
+          partsDone,
+          partsTotal: parts.length,
+        };
+      }
+      if (!(p[ph.id] || {}).buildDone) {
+        return { text: ph.name, phaseId: ph.id, stepId: null, phaseName: ph.name };
+      }
+    } else if (!(p[ph.id] || {}).buildDone) {
+      return { text: ph.name, phaseId: ph.id, stepId: null, phaseName: ph.name };
+    }
+  }
+  return null; // every phase/step already done
 }
 

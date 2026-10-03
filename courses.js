@@ -24,3 +24,31 @@ export function nextLessonFor(course, progress) {
   return course.lessons.find((l) => !(p[l.id] || {}).passed) || null;
 }
 
+// Every already-completed check question in a course, for "solve to
+// attack" - reviewing material actually learned, never spoiling
+// anything not reached yet. Stops at the first lesson that isn't fully
+// passed, so a half-finished lesson's later parts don't leak in.
+export function questionPoolForCourse(course, progress) {
+  const p = (progress || {})[`course_${course.id}`] || {};
+  const pool = [];
+  for (const lesson of course.lessons) {
+    const lp = p[lesson.id] || {};
+    const parts = lesson.parts || [];
+    for (const part of parts) {
+      if (part.check && part.check.options && (lp.parts || {})[part.id]) {
+        pool.push({
+          q: part.check.q,
+          options: part.check.options,
+          correct: part.check.correct,
+          why: part.check.why,
+          lessonId: lesson.id,
+          partId: part.id,
+        });
+      }
+    }
+    const lessonPassed = lp.passed || (parts.length > 0 && parts.every((pt) => (lp.parts || {})[pt.id]));
+    if (!lessonPassed) break;
+  }
+  return pool;
+}
+

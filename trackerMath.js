@@ -1,6 +1,7 @@
-const EPISODIC_LABELS = ['anime', 'tv series', 'tv show', 'tv'];
-const MANGA_LABELS = ['manga', 'comic', 'comics', 'manhwa', 'webtoon'];
-const GAME_LABELS = ['game', 'games', 'video game', 'video games'];
+export const EPISODIC_LABELS = ['anime', 'tv series', 'tv show', 'tv'];
+export const MANGA_LABELS = ['manga', 'comic', 'comics', 'manhwa', 'webtoon'];
+export const GAME_LABELS = ['game', 'games', 'video game', 'video games'];
+export const MOVIE_LABELS = ['movie', 'movies', 'film', 'films'];
 
 export function isEpisodicCategory(categories, catId) {
   if (catId === 'anime' || catId === 'tv_series') return true;
@@ -32,6 +33,18 @@ export function isGameCategory(categories, catId) {
   return GAME_LABELS.includes((cat.label || '').trim().toLowerCase());
 }
 
+// A movie isn't tracked by episode/chapter count or completion % - it's
+// either watched or it isn't. Without this, a movie item fell through
+// to the same "ongoing series" fallback an anime/show with no episode
+// total yet uses, which is why movies were showing an episode-style
+// counter + stepper that meant nothing for them.
+export function isMovieCategory(categories, catId) {
+  if (catId === 'movie') return true;
+  const cat = categories.find((c) => c.id === catId);
+  if (!cat) return false;
+  return MOVIE_LABELS.includes((cat.label || '').trim().toLowerCase());
+}
+
 export function catLabel(categories, id) {
   const c = categories.find((c) => c.id === id);
   return c ? c.label : 'Other';
@@ -52,6 +65,26 @@ export function appendProgressLog(item, newValue) {
   const today = new Date().toISOString().slice(0, 10);
   const filtered = log.filter((e) => e.date !== today);
   return [...filtered, { date: today, value: newValue, at: Date.now() }].slice(-30);
+}
+
+// How many episodes of a weekly-release anime/show have actually aired
+// so far, separate from how many the person has WATCHED (epCurrent).
+// Given the date episode 1 aired and a total episode count, assumes one
+// new episode drops every 7 days and counts forward from there - so a
+// 12-episode show that started 8 weeks ago reads as "fully released"
+// even if the person is still only 3 episodes into watching it. That
+// distinction (released vs. watched) is the point: it answers "has this
+// finished airing yet", which the watched count alone can't.
+export function releasedEpisodeCount(airDate, epTotal) {
+  const total = Number(epTotal) || 0;
+  if (!airDate || total <= 0) return null;
+  const start = new Date(airDate + 'T00:00:00');
+  if (isNaN(start.getTime())) return null;
+  const now = new Date();
+  const daysSince = Math.floor((now - start) / (24 * 60 * 60 * 1000));
+  if (daysSince < 0) return 0; // hasn't started airing yet
+  const released = Math.floor(daysSince / 7) + 1;
+  return Math.max(0, Math.min(total, released));
 }
 
 // A day estimate is a nice bonus when there happens to be at least two

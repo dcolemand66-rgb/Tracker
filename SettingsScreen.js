@@ -410,10 +410,12 @@ export default function SettingsScreen({
             Habits with a growing target (like pushups climbing over time)
             all in one place, instead of opening each one individually.
           </Text>
-          {habits.length === 0 ? (
+          {habits.filter((h) => h.sessionType !== 'workout').length === 0 ? (
             <Text style={shared.tagline}>No habits yet.</Text>
           ) : (
-            habits.map((h) => {
+            habits
+              .filter((h) => h.sessionType !== 'workout')
+              .map((h) => {
               const g = h.growth;
               const isOn = g && g.enabled;
               const isEditing = growthEditId === h.id;

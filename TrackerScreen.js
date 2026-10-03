@@ -14,18 +14,24 @@ import {
 import { pickCompressedImage } from './imagePicker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
+import { TRACKER_THEME } from './pageThemes';
+import PageHeader from './PageHeader';
 import TrackerCard from './TrackerCard';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import {
   isEpisodicCategory,
   isMangaCategory,
   isGameCategory,
+  isMovieCategory,
   catLabel,
   catColor,
   appendProgressLog,
-  estimateCompletion,
+  EPISODIC_LABELS,
+  MANGA_LABELS,
+  GAME_LABELS,
+  MOVIE_LABELS,
 } from './trackerMath';
 
-const MOVIE_LABELS = ['movie', 'movies', 'film', 'films'];
 function getYouTubeId(url) {
   try {
     const u = new URL(url);
@@ -70,7 +76,6 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
   const [activeFilter, setActiveFilter] = useState('all');
   const [hasAppliedDefault, setHasAppliedDefault] = useState(false);
   const [activeSub, setActiveSub] = useState('all'); // 'all' | 'coming_soon' | 'in_progress'
-  const [fastestMode, setFastestMode] = useState(false);
   useEffect(() => {
     if (initialFilter && initialFilter !== 'all') {
       setActiveFilter(initialFilter);
@@ -98,6 +103,8 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState(emptyDraft());
   const [epModalId, setEpModalId] = useState(null);
+  const [showReleaseDatePicker, setShowReleaseDatePicker] = useState(false);
+  const [showAirDatePicker, setShowAirDatePicker] = useState(false);
 
   function emptyDraft() {
     return {
@@ -106,14 +113,17 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
       notes: '',
       status: '',
       releaseDate: '',
+      releaseDateUnknown: false,
       mediaUrl: '',
       epCurrent: '',
       epTotal: '',
+      airDate: '',
       gamePercent: '',
       progressLabel: '',
       progressCurrent: '',
       progressTotal: '',
       wantToBuy: false,
+      watched: false,
       image: null,
     };
   }
@@ -132,14 +142,17 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
       notes: item.notes || '',
       status: item.status || '',
       releaseDate: item.releaseDate || '',
+      releaseDateUnknown: !!item.releaseDate && !/^\d{4}-\d{2}-\d{2}$/.test(item.releaseDate),
       mediaUrl: item.mediaUrl || '',
       epCurrent: item.epCurrent ? String(item.epCurrent) : '',
       epTotal: item.epTotal ? String(item.epTotal) : '',
+      airDate: item.airDate || '',
       gamePercent: item.gamePercent ? String(item.gamePercent) : '',
       progressLabel: item.progressLabel || '',
       progressCurrent: item.progressCurrent ? String(item.progressCurrent) : '',
       progressTotal: item.progressTotal ? String(item.progressTotal) : '',
       wantToBuy: !!item.wantToBuy,
+      watched: !!item.watched,
       image: item.image || null,
     });
     setModalOpen(true);
@@ -181,6 +194,8 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
       mediaUrl: draft.mediaUrl.trim(),
       epCurrent: Number(draft.epCurrent) || 0,
       epTotal: Number(draft.epTotal) || 0,
+      airDate: draft.airDate.trim(),
+      watched: isMovieCategory(categories, draft.category) ? !!draft.watched : false,
       gamePercent:
         calculatedPercent != null
           ? Math.max(0, Math.min(100, calculatedPercent))
@@ -302,19 +317,26 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
     setTimeout(() => {
       Alert.alert(
         'Nice!',
-        `You finished "${item.title}"! Remove it from your tracker?`,
+        `You finished "${item.title}"! Move it to your Finished list?`,
         [
-          { text: 'Keep it', style: 'cancel' },
+          { text: 'Not yet', style: 'cancel' },
           {
-            text: 'Remove',
-            style: 'destructive',
-            onPress: () => {
-              setItems((prev) => prev.filter((it) => it.id !== item.id));
-            },
+            text: 'Move to Finished',
+            onPress: () => archiveItem(item),
           },
         ]
       );
     }, 250);
+  }
+
+  // Finished items get their own location instead of staying mixed into
+  // the regular grid or getting deleted outright - archived here just
+  // means "out of Tracker, over in Finished", with completedAt as the
+  // record of when that happened.
+  function archiveItem(item) {
+    setItems((prev) =>
+      prev.map((it) => (it.id === item.id ? { ...it, archived: true, completedAt: Date.now() } : it))
+    );
   }
 
   function adjustEpisode(item, delta) {
@@ -335,6 +357,12 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
     }
   }
 
+  function toggleWatched(item) {
+    const next = !item.watched;
+    setItems((prev) => prev.map((it) => (it.id === item.id ? { ...it, watched: next } : it)));
+    if (next) promptItemCompletion({ ...item, watched: next });
+  }
+
   function adjustGamePercent(item, delta) {
     const wasComplete = (Number(item.gamePercent) || 0) >= 100;
     let next = (Number(item.gamePercent) || 0) + delta;
@@ -353,11 +381,13 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
 
   const counts = {};
   items.forEach((i) => {
+    if (i.archived) return;
     counts[i.category] = (counts[i.category] || 0) + 1;
   });
-  const comingSoonCount = items.filter((i) => i.status === 'coming_soon').length;
+  const comingSoonCount = items.filter((i) => i.status === 'coming_soon' && !i.archived).length;
 
   let filtered = items.filter((i) => {
+    if (i.archived) return false; // Finished items live on the Priority tab now, not the main grid.
     if (activeFilter !== 'all' && activeFilter !== 'coming_soon' && i.category !== activeFilter) {
       return false;
     }
@@ -375,30 +405,14 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
   });
   if (search.trim()) {
     const t = search.trim().toLowerCase();
-    filtered = filtered.filter((i) => i.title.toLowerCase().includes(t));
+    filtered = filtered.filter((i) => (i.title || '').toLowerCase().includes(t));
   }
-  // "Fastest to Finish" is automatic - it only needs a Current/Total
-  // already entered on the item (from the Add/Edit form), nothing extra
-  // to log first. Ranked by percent complete, so whichever item has the
-  // least left is listed first; a logged-pace day estimate rides along
-  // as a bonus wherever there's enough history for one.
-  const completionById = {};
-  if (fastestMode) {
-    filtered = filtered.filter((i) => {
-      const c = estimateCompletion(i, categories);
-      if (!c) return false;
-      completionById[i.id] = c;
-      return true;
-    });
-    filtered = [...filtered].sort((a, b) => completionById[a.id].remainingPercent - completionById[b.id].remainingPercent);
-  } else {
-    filtered = [...filtered].sort((a, b) => {
-      const aCS = a.status === 'coming_soon' ? 1 : 0;
-      const bCS = b.status === 'coming_soon' ? 1 : 0;
-      if (aCS !== bCS) return aCS - bCS;
-      return (b.updatedAt || 0) - (a.updatedAt || 0);
-    });
-  }
+  filtered = [...filtered].sort((a, b) => {
+    const aCS = a.status === 'coming_soon' ? 1 : 0;
+    const bCS = b.status === 'coming_soon' ? 1 : 0;
+    if (aCS !== bCS) return aCS - bCS;
+    return (b.updatedAt || 0) - (a.updatedAt || 0);
+  });
 
   const epItem = items.find((i) => i.id === epModalId);
   const activeFilterLabel =
@@ -428,35 +442,74 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
   return (
     <View style={{ flex: 1 }}>
       <ScrollView contentContainerStyle={shared.container}>
-        <View style={styles.headerRow}>
-          <View style={{ flex: 1 }}>
-            <Text style={shared.h1}>Tracker</Text>
-            <Text style={shared.tagline}>
-              {activeFilterLabel} · {filtered.length} title{filtered.length === 1 ? '' : 's'}
-            </Text>
+        <View style={styles.headerSection}>
+          <View style={styles.headerRow}>
+            <View style={{ flex: 1 }}>
+              <PageHeader theme={TRACKER_THEME} title="Tracker" />
+              <Text style={shared.tagline}>
+                {activeFilterLabel} · {filtered.length} title{filtered.length === 1 ? '' : 's'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.iconBtn}
+              onPress={() => setSearchOpen((s) => !s)}
+            >
+              <Text style={styles.iconBtnText}>🔍</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.iconBtn} onPress={openFilterSheet}>
+              <Text style={styles.iconBtnText}>⚙️</Text>
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.iconBtn, fastestMode && styles.iconBtnActive]}
-            onPress={() => setFastestMode((f) => !f)}
-          >
-            <Text style={styles.iconBtnText}>⚡</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => setSearchOpen((s) => !s)}
-          >
-            <Text style={styles.iconBtnText}>🔍</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={openFilterSheet}>
-            <Text style={styles.iconBtnText}>⚙️</Text>
-          </TouchableOpacity>
-        </View>
 
-        {fastestMode ? (
-          <Text style={[shared.tagline, { marginTop: -12 }]}>
-            ⚡ Fastest to Finish — sorted by remaining percentage, lowest left first.
-          </Text>
-        ) : null}
+          {/* Quick filter chips - tap straight to a category, no sheet or
+              "Apply" step needed for the common case. The gear icon still
+              opens the fuller sheet for the "in progress / playing" refinement. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickFilterRow}
+          >
+            <TouchableOpacity
+              style={[styles.quickChip, activeFilter === 'all' && styles.quickChipSel]}
+              onPress={() => {
+                setActiveFilter('all');
+                setActiveSub('all');
+              }}
+            >
+              <Text style={[styles.quickChipText, activeFilter === 'all' && styles.quickChipTextSel]}>
+                All
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.quickChip, activeFilter === 'coming_soon' && styles.quickChipSel]}
+              onPress={() => {
+                setActiveFilter('coming_soon');
+                setActiveSub('all');
+              }}
+            >
+              <Text style={[styles.quickChipText, activeFilter === 'coming_soon' && styles.quickChipTextSel]}>
+                📅 Coming Soon
+              </Text>
+            </TouchableOpacity>
+            {categories.map((c) => (
+              <TouchableOpacity
+                key={c.id}
+                style={[
+                  styles.quickChip,
+                  activeFilter === c.id && { backgroundColor: c.color, borderColor: c.color },
+                ]}
+                onPress={() => {
+                  setActiveFilter(c.id);
+                  setActiveSub('all');
+                }}
+              >
+                <Text style={[styles.quickChipText, activeFilter === c.id && styles.quickChipTextSel]}>
+                  {c.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
 
         {searchOpen ? (
           <TextInput
@@ -472,12 +525,10 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
         {filtered.length === 0 ? (
           <View style={shared.block}>
             <Text style={{ fontSize: 16, fontWeight: '600', color: INK, marginBottom: 4 }}>
-              {fastestMode ? 'Nothing with a total yet' : 'Nothing here yet'}
+              Nothing here yet
             </Text>
             <Text style={shared.tagline}>
-              {fastestMode
-                ? 'Give something a Current/Total (episodes, chapters, or completion %) and it shows up here automatically.'
-                : "Tap + to log something you're watching, playing, or reading."}
+              Tap + to log something you're watching, playing, or reading.
             </Text>
           </View>
         ) : (
@@ -486,14 +537,9 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
               const isGame = isGameCategory(categories, item.category);
               const isManga = isMangaCategory(categories, item.category);
               const isEpisodic = isEpisodicCategory(categories, item.category);
+              const isMovie = isMovieCategory(categories, item.category);
               const color = catColor(categories, item.category);
               const label = catLabel(categories, item.category);
-              const completion = fastestMode ? completionById[item.id] : null;
-              const etaLabel = completion
-                ? completion.days
-                  ? `${completion.remainingPercent}% remaining · ~${completion.days} day${completion.days === 1 ? '' : 's'} left at this pace`
-                  : `${completion.remainingPercent}% remaining · ${completion.remaining} left`
-                : null;
               return (
                 <TrackerCard
                   key={item.id}
@@ -504,11 +550,13 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
                   isGame={isGame}
                   isManga={isManga}
                   isEpisodic={isEpisodic}
+                  isMovie={isMovie}
                   onEdit={() => openEdit(item)}
                   onManageProgress={() => setEpModalId(item.id)}
                   onAdjustEpisode={adjustEpisode}
                   onAdjustGamePercent={adjustGamePercent}
-                  etaLabel={etaLabel}
+                  onToggleWatched={toggleWatched}
+                  onArchive={archiveItem}
                 />
               );
             })}
@@ -516,7 +564,10 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
         )}
       </ScrollView>
 
-      <TouchableOpacity style={styles.fab} onPress={openAdd}>
+      <TouchableOpacity
+        style={[styles.fab, { backgroundColor: TRACKER_THEME.accent, shadowColor: TRACKER_THEME.accent }]}
+        onPress={openAdd}
+      >
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
 
@@ -789,16 +840,67 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
 
                   {draft.status === 'coming_soon' ? (
                     <>
-                      <Text style={styles.label}>Release Date (YYYY-MM-DD)</Text>
-                      <TextInput
-                        style={styles.input}
-                        value={draft.releaseDate}
-                        onChangeText={(v) =>
-                          setDraft((d) => ({ ...d, releaseDate: v }))
-                        }
-                        placeholder="2026-09-01"
-                        placeholderTextColor="#9aa5b1"
-                      />
+                      <Text style={styles.label}>Release Date (optional)</Text>
+                      <Text style={[shared.tagline, { marginTop: -4, marginBottom: 6 }]}>
+                        Pick the real date when you know it — that's the only way this shows up
+                        on Calendar's Upcoming Releases. Free text is for when it's genuinely
+                        unknown ("Fall 2026", "TBA").
+                      </Text>
+                      <View style={styles.dateModeRow}>
+                        <TouchableOpacity
+                          style={[styles.dateModeChip, !draft.releaseDateUnknown && styles.dateModeChipSel]}
+                          onPress={() => setDraft((d) => ({ ...d, releaseDateUnknown: false, releaseDate: '' }))}
+                        >
+                          <Text style={[styles.dateModeChipText, !draft.releaseDateUnknown && styles.dateModeChipTextSel]}>
+                            📅 Known date
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.dateModeChip, draft.releaseDateUnknown && styles.dateModeChipSel]}
+                          onPress={() => setDraft((d) => ({ ...d, releaseDateUnknown: true, releaseDate: '' }))}
+                        >
+                          <Text style={[styles.dateModeChipText, draft.releaseDateUnknown && styles.dateModeChipTextSel]}>
+                            ❓ Not sure yet
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {draft.releaseDateUnknown ? (
+                        <TextInput
+                          style={styles.input}
+                          value={draft.releaseDate}
+                          onChangeText={(v) => setDraft((d) => ({ ...d, releaseDate: v }))}
+                          placeholder="Fall 2026, TBA, early 2027..."
+                          placeholderTextColor="#9aa5b1"
+                        />
+                      ) : (
+                        <>
+                          <TouchableOpacity style={styles.input} onPress={() => setShowReleaseDatePicker(true)}>
+                            <Text style={{ color: draft.releaseDate ? INK : '#9aa5b1', fontSize: 15 }}>
+                              {draft.releaseDate ? formatReleaseDate(draft.releaseDate) : 'Tap to pick a date'}
+                            </Text>
+                          </TouchableOpacity>
+                          {showReleaseDatePicker ? (
+                            <DateTimePicker
+                              value={
+                                /^\d{4}-\d{2}-\d{2}$/.test(draft.releaseDate)
+                                  ? new Date(draft.releaseDate + 'T00:00:00')
+                                  : new Date()
+                              }
+                              mode="date"
+                              onChange={(event, selected) => {
+                                setShowReleaseDatePicker(false);
+                                if (event.type !== 'dismissed' && selected) {
+                                  const y = selected.getFullYear();
+                                  const m = String(selected.getMonth() + 1).padStart(2, '0');
+                                  const d = String(selected.getDate()).padStart(2, '0');
+                                  setDraft((prev) => ({ ...prev, releaseDate: `${y}-${m}-${d}` }));
+                                }
+                              }}
+                            />
+                          ) : null}
+                        </>
+                      )}
                     </>
                   ) : null}
                 </>
@@ -834,6 +936,48 @@ export default function TrackerScreen({ items, setItems, categories, setCategori
                       keyboardType="numeric"
                     />
                   </View>
+                </>
+              ) : null}
+
+              {isEpisodicCategory(categories, draft.category) && !isMangaCategory(categories, draft.category) ? (
+                <>
+                  <Text style={styles.label}>Started Airing (optional)</Text>
+                  <Text style={[shared.tagline, { marginTop: -4, marginBottom: 6 }]}>
+                    The date episode 1 aired, for a weekly-release counter showing how many
+                    episodes have come out so far — separate from how many you've watched.
+                  </Text>
+                  <TouchableOpacity style={styles.input} onPress={() => setShowAirDatePicker(true)}>
+                    <Text style={{ color: draft.airDate ? INK : '#9aa5b1', fontSize: 15 }}>
+                      {draft.airDate ? formatReleaseDate(draft.airDate) : 'Tap to pick a date'}
+                    </Text>
+                  </TouchableOpacity>
+                  {draft.airDate ? (
+                    <TouchableOpacity
+                      style={{ alignItems: 'center', marginTop: 6 }}
+                      onPress={() => setDraft((d) => ({ ...d, airDate: '' }))}
+                    >
+                      <Text style={{ fontSize: 12, color: DIM }}>Clear date</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  {showAirDatePicker ? (
+                    <DateTimePicker
+                      value={
+                        /^\d{4}-\d{2}-\d{2}$/.test(draft.airDate)
+                          ? new Date(draft.airDate + 'T00:00:00')
+                          : new Date()
+                      }
+                      mode="date"
+                      onChange={(event, selected) => {
+                        setShowAirDatePicker(false);
+                        if (event.type !== 'dismissed' && selected) {
+                          const y = selected.getFullYear();
+                          const m = String(selected.getMonth() + 1).padStart(2, '0');
+                          const d = String(selected.getDate()).padStart(2, '0');
+                          setDraft((prev) => ({ ...prev, airDate: `${y}-${m}-${d}` }));
+                        }
+                      }}
+                    />
+                  ) : null}
                 </>
               ) : null}
 
@@ -923,6 +1067,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 8,
+    position: 'relative',
     shadowColor: '#000',
     shadowOpacity: 0.08,
     shadowRadius: 4,
@@ -930,6 +1075,45 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   iconBtnText: { fontSize: 17 },
+  finishedBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: '#3f8f82',
+    borderRadius: 9,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  finishedBadgeText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  finishedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: BORDER,
+  },
+  finishedThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginRight: 12,
+  },
+  finishedThumbImg: { width: '100%', height: '100%' },
+  finishedThumbLetter: { color: GOLD, fontSize: 18, fontWeight: '800' },
+  finishedTitle: { color: INK, fontSize: 14.5, fontWeight: '700' },
+  finishedSub: { color: DIM, fontSize: 11.5, marginTop: 2 },
+  finishedDate: { color: '#4fb894', fontSize: 11.5, marginTop: 2, fontWeight: '700' },
+  finishedAction: { paddingHorizontal: 8, paddingVertical: 6 },
+  finishedActionText: { color: '#8fc4e8', fontSize: 12, fontWeight: '700' },
   iconBtnActive: { backgroundColor: GOLD },
   chipSel: { backgroundColor: GOLD, borderColor: GOLD },
   grid: {
@@ -943,6 +1127,12 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 14,
     borderLeftWidth: 5,
+    borderTopWidth: 1,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderTopColor: BORDER,
+    borderRightColor: BORDER,
+    borderBottomColor: BORDER,
     shadowColor: '#000',
     shadowOpacity: 0.1,
     shadowRadius: 10,
@@ -1118,4 +1308,49 @@ const styles = StyleSheet.create({
   deleteBtnText: { color: ROSE, fontSize: 14, fontWeight: '600' },
   cancelBtn: { paddingVertical: 10, alignItems: 'center', marginTop: 2 },
   cancelBtnText: { color: DIM, fontSize: 14 },
+
+  // Header + quick-filter chip row, visually boxed off from the grid below
+  // so the controls read as their own strip instead of floating loose
+  // above the list.
+  headerSection: {
+    backgroundColor: CARD,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    paddingHorizontal: 14,
+    paddingTop: 14,
+    paddingBottom: 12,
+    marginBottom: 16,
+  },
+  quickFilterRow: {
+    paddingTop: 12,
+    paddingRight: 6,
+    gap: 8,
+  },
+  quickChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: '#232d3a',
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  quickChipSel: { backgroundColor: GOLD, borderColor: GOLD },
+  quickChipText: { color: DIM, fontSize: 13, fontWeight: '700' },
+  quickChipTextSel: { color: '#1a1f27' },
+
+  // Known-date / Not-sure-yet toggle for Release Date.
+  dateModeRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  dateModeChip: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+    backgroundColor: '#232d3a',
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  dateModeChipSel: { backgroundColor: GOLD, borderColor: GOLD },
+  dateModeChipText: { color: DIM, fontSize: 13, fontWeight: '700' },
+  dateModeChipTextSel: { color: '#1a1f27' },
 });

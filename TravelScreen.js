@@ -794,16 +794,21 @@ export default function TravelScreen({ trips, setTrips }) {
               return (
                 <TouchableOpacity
                   key={it.id}
-                  style={styles.listing}
+                  style={[styles.listing, { borderTopWidth: 3, borderTopColor: cat.tint }]}
                   activeOpacity={0.85}
                   onPress={() => setDetailItemId(it.id)}
                 >
                   {it.image ? (
                     <Image source={{ uri: it.image }} style={styles.listingPhoto} />
                   ) : (
-                    <View style={[styles.listingPhoto, styles.listingPhotoEmpty, { backgroundColor: `${cat.tint}22` }]}>
+                    <LinearGradient
+                      colors={[`${cat.tint}55`, `${cat.tint}15`]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={[styles.listingPhoto, styles.listingPhotoEmpty]}
+                    >
                       <Text style={{ fontSize: 34 }}>{cat.icon}</Text>
-                    </View>
+                    </LinearGradient>
                   )}
                   {it.booked ? (
                     <View style={styles.bookedBadge}>

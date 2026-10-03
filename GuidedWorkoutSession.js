@@ -2,228 +2,71 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { GOLD, INK, DIM, CARD, BORDER } from './theme';
 
-// Bodyweight-only programs. Each block is either rep-based (you tap when
-// you finish the set) or time-based (counts itself down), followed by a
-// rest period. Names match the seeded exercise library so completed
-// sessions log against real exercises.
-// Bodyweight-only programs. Each block is either rep-based (you tap when
-// you finish the set) or time-based (counts itself down), followed by a
-// rest period. Names match the seeded exercise library so completed
-// sessions log against real exercises.
+// Bodyweight-only + dumbbell programs. Each block is either rep-based
+// (you tap when you finish the set) or time-based (counts itself down),
+// followed by a rest period. Names match the seeded exercise library so
+// completed sessions log against real exercises.
 //
-// A real difficulty ladder now, not a single template on repeat — push-ups,
-// squats, and planks interleaved so no one movement pattern gets stale,
-// climbing from "just get the habit started" to a genuine combined finisher.
-// Advance to the next level after REPS_TO_ADVANCE completions at the
-// current one, mirroring how the meditation streak levels work.
-export const REPS_TO_ADVANCE = 3;
+// Built from workoutTracks.js: real progressions (cross-referenced
+// across multiple beginner push-up/squat guides, not just one source),
+// one exercise at a time - start at 1 rep, grow by 1 every session,
+// 100 cumulative reps unlocks the next variation or the next exercise.
+import {
+  defaultUnlockedPatterns,
+  normalizeExerciseState,
+  exerciseBlock,
+  growAllExercises,
+  currentStage,
+} from './workoutTracks';
 
-export const WORKOUT_TEMPLATES = [
-  {
-    id: 'level_0',
-    name: 'Push-ups',
-    subtitle: 'Level 1 - just get the habit started',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Knee Push-ups',
-        mode: 'reps',
-        target: 5,
-        rest: 0,
-        cue:
-          'Hands under shoulders, body straight from knees to head. Lower until your chest is a fist off the floor, then press up. Slow and controlled beats fast and sloppy - 5 clean reps is the whole session.',
-      },
-    ],
-  },
-  {
-    id: 'level_1',
-    name: 'Squats',
-    subtitle: 'Level 2 - the second movement pattern',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Bodyweight Squats',
-        mode: 'reps',
-        target: 10,
-        rest: 0,
-        cue:
-          'Feet shoulder-width apart, toes slightly out. Sit your hips back and down like reaching for a chair, chest up, knees tracking over your toes. Go as low as feels controlled, then drive back up through your heels.',
-      },
-    ],
-  },
-  {
-    id: 'level_2',
-    name: 'Push-ups',
-    subtitle: 'Level 3 - off the knees',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Push-ups',
-        mode: 'reps',
-        target: 5,
-        rest: 0,
-        cue:
-          'Same form as the knee version, but from your toes now. Keep your body in one straight line - a sagging hip or a raised butt both mean the core has stopped doing its job. Fewer perfect reps beats more sloppy ones.',
-      },
-    ],
-  },
-  {
-    id: 'level_3',
-    name: 'Plank',
-    subtitle: 'Level 4 - core stability',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Plank Hold',
-        mode: 'time',
-        seconds: 20,
-        rest: 0,
-        cue:
-          'Forearms on the floor, elbows under shoulders, body one straight line from head to heels. Squeeze your glutes and brace your abs like you are about to be poked in the stomach. Do not let your hips sag or pike up.',
-      },
-    ],
-  },
-  {
-    id: 'level_4',
-    name: 'Push-ups + Squats',
-    subtitle: 'Level 5 - combining the two',
-    rounds: 1,
-    restBetweenRounds: 30,
-    blocks: [
-      {
-        name: 'Push-ups',
-        mode: 'reps',
-        target: 8,
-        rest: 20,
-        cue: 'Same form as before, just more of them. Break it into two sets in your head if you need to - 8 clean reps matters more than 8 fast ones.',
-      },
-      {
-        name: 'Bodyweight Squats',
-        mode: 'reps',
-        target: 15,
-        rest: 0,
-        cue: 'Same squat form, higher rep count. Keep the pace steady rather than rushing the last few.',
-      },
-    ],
-  },
-  {
-    id: 'level_5',
-    name: 'Wide Push-ups',
-    subtitle: 'Level 6 - a wider hand position shifts the load',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Wide Push-ups',
-        mode: 'reps',
-        target: 8,
-        rest: 0,
-        cue:
-          'Hands set out past shoulder width instead of directly under them. This puts more emphasis on the chest and less on the triceps - expect it to feel different even at the same rep count as a standard push-up.',
-      },
-    ],
-  },
-  {
-    id: 'level_6',
-    name: 'Plank',
-    subtitle: 'Level 7 - twice as long as level 4',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Plank Hold',
-        mode: 'time',
-        seconds: 40,
-        rest: 0,
-        cue: 'Same plank form. The last 10 seconds are where it actually trains anything - resist the urge to let your hips drop as fatigue sets in.',
-      },
-    ],
-  },
-  {
-    id: 'level_7',
-    name: 'Push-ups + Squats',
-    subtitle: 'Level 8 - higher volume',
-    rounds: 1,
-    restBetweenRounds: 30,
-    blocks: [
-      {
-        name: 'Push-ups',
-        mode: 'reps',
-        target: 12,
-        rest: 25,
-        cue: 'Same standard push-up form. If form breaks down before 12, that is useful information - the rep where it breaks down is the one worth paying attention to.',
-      },
-      {
-        name: 'Bodyweight Squats',
-        mode: 'reps',
-        target: 20,
-        rest: 0,
-        cue: 'Same squat form, still. Depth and control matter more than speed at any rep count.',
-      },
-    ],
-  },
-  {
-    id: 'level_8',
-    name: 'Diamond Push-ups',
-    subtitle: 'Level 9 - triceps take over most of the load',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Diamond Push-ups',
-        mode: 'reps',
-        target: 8,
-        rest: 0,
-        cue:
-          'Hands together under your chest, thumbs and index fingers touching to form a diamond shape. This shifts most of the work onto the triceps - expect it to feel noticeably harder than a standard push-up at the same rep count.',
-      },
-    ],
-  },
-  {
-    id: 'level_9',
-    name: 'Combined Finisher',
-    subtitle: 'Level 10 - the top of this ladder',
-    rounds: 1,
-    restBetweenRounds: 0,
-    blocks: [
-      {
-        name: 'Push-ups',
-        mode: 'reps',
-        target: 15,
-        rest: 20,
-        cue: 'Standard push-up form, highest rep count on the ladder. Split it mentally into three sets of 5 if that helps.',
-      },
-      {
-        name: 'Bodyweight Squats',
-        mode: 'reps',
-        target: 25,
-        rest: 20,
-        cue: 'Standard squat form, highest rep count on the ladder.',
-      },
-      {
-        name: 'Plank Hold',
-        mode: 'time',
-        seconds: 60,
-        rest: 0,
-        cue: 'A full minute to finish. Same form as every plank before this - the only thing that changed is how tired you already are going into it.',
-      },
-    ],
-  },
-];
+// overrides: { [exerciseName]: number } - a custom target for any block
+// by name, for the rare case the default number doesn't fit.
+//
+// Builds today's session from whatever's actually unlocked so far - see
+// workoutTracks.js: one exercise at a time, each growing by 1 rep every
+// session, unlocking the next variation (or next pattern) once its
+// cumulative total hits 100. Nothing here decides WHICH exercises show
+// up; it just renders whatever habit.unlockedPatterns says, always 1 set.
+export function buildWorkoutTemplate(habit) {
+  const stateMap = normalizeExerciseState(habit.exerciseState);
+  const overrides = habit.exerciseOverrides || {};
+  const unlocked = habit.unlockedPatterns && habit.unlockedPatterns.length ? habit.unlockedPatterns : defaultUnlockedPatterns();
 
-export const WORKOUT_MAX_LEVEL = WORKOUT_TEMPLATES.length - 1;
+  function applyOverride(b) {
+    const ov = overrides[b.name];
+    if (ov == null || Number.isNaN(Number(ov))) return b;
+    return b.mode === 'time' ? { ...b, seconds: Number(ov) } : { ...b, target: Number(ov) };
+  }
 
-export function workoutLevelSpec(levelIndex) {
-  const n = Math.max(0, Math.min(WORKOUT_MAX_LEVEL, levelIndex || 0));
+  const blocks = unlocked.map((key) => applyOverride(exerciseBlock(key, stateMap[key])));
+
   return {
-    level: n,
-    template: WORKOUT_TEMPLATES[n],
-    isMax: n >= WORKOUT_MAX_LEVEL,
+    template: {
+      id: 'daily_session',
+      name: "Today's Session",
+      rounds: 1,
+      restBetweenRounds: 20,
+      blocks,
+    },
   };
+}
+
+// Applies growth + the 100-rep unlock rule to every currently-unlocked
+// exercise after a completed session. entries: the raw entries from
+// GuidedWorkoutSession's onComplete result (one per exercise, since
+// rounds is always 1 here).
+export function evaluateAllTracks(habit, entries) {
+  const unlocked = habit.unlockedPatterns && habit.unlockedPatterns.length ? habit.unlockedPatterns : defaultUnlockedPatterns();
+  const valuesByKey = {};
+  unlocked.forEach((key) => {
+    const stateMap = normalizeExerciseState(habit.exerciseState);
+    const stage = currentStage(key, stateMap[key].stageIndex);
+    const entry = entries.find((e) => e.name === stage.name);
+    valuesByKey[key] = entry ? entry.value : 0;
+  });
+
+  const { exerciseState, unlockedPatterns, events, patternToUnlock } = growAllExercises(habit, valuesByKey);
+  return { exerciseState, unlockedPatterns, events, patternToUnlock };
 }
 
 const READY_SECONDS = 5;
@@ -235,7 +78,15 @@ function fmt(total) {
 }
 
 // Phases: intro -> ready -> work -> rest -> roundRest -> done
-export default function GuidedWorkoutSession({ template, onComplete, onExit }) {
+// sessionDifficulty (optional): { effectiveLevel: 1-10, tier, trend, mood, moodLabel, ... }
+// from consistencyEngine.getSessionDifficulty(), already folding in both
+// this habit's rolling consistency AND the mood picked right before this
+// session opened. Currently unused here on purpose - the workout content
+// itself is still the fixed `template` passed in. TODO (content phase):
+// once there's an actual pool of workouts/exercises to pick from, use
+// sessionDifficulty.effectiveLevel to choose a harder or easier variant,
+// or to unlock a new exercise, instead of always running `template`.
+export default function GuidedWorkoutSession({ template, onComplete, onExit, sessionDifficulty }) {
   const [phase, setPhase] = useState('intro');
   const [roundIndex, setRoundIndex] = useState(0);
   const [blockIndex, setBlockIndex] = useState(0);
@@ -371,7 +222,7 @@ export default function GuidedWorkoutSession({ template, onComplete, onExit }) {
       ? isLastBlock
         ? isLastRound
           ? 'Finish'
-          : `Round ${roundIndex + 2}`
+          : `Set ${roundIndex + 2}`
         : blocks[blockIndex + 1].name
       : null;
 
@@ -385,7 +236,7 @@ export default function GuidedWorkoutSession({ template, onComplete, onExit }) {
         <ScrollView contentContainerStyle={styles.introScroll}>
           <Text style={styles.title}>{template.name}</Text>
           <Text style={styles.subtitle}>
-            {template.rounds} rounds • {blocks.length} exercises • no equipment
+            {blocks.length} exercise{blocks.length === 1 ? '' : 's'} • bodyweight + dumbbells
           </Text>
           {blocks.map((b, i) => (
             <View key={i} style={styles.previewRow}>
@@ -412,7 +263,7 @@ export default function GuidedWorkoutSession({ template, onComplete, onExit }) {
       {phase === 'work' && (
         <View style={styles.center}>
           <Text style={styles.phaseLabel}>
-            Round {roundIndex + 1} of {template.rounds} • Exercise {blockIndex + 1} of {blocks.length}
+            Exercise {blockIndex + 1} of {blocks.length}
           </Text>
           <Text style={styles.exerciseName}>{block.name}</Text>
 
@@ -449,12 +300,12 @@ export default function GuidedWorkoutSession({ template, onComplete, onExit }) {
       {(phase === 'rest' || phase === 'roundRest') && (
         <View style={styles.center}>
           <Text style={styles.phaseLabel}>
-            {phase === 'roundRest' ? 'Round complete — rest' : 'Rest'}
+            {phase === 'roundRest' ? 'Set complete — rest' : 'Rest'}
           </Text>
           <Text style={styles.bigTimer}>{fmt(timeLeft)}</Text>
           {nextUp ? <Text style={styles.upNext}>Next: {nextUp}</Text> : null}
           {phase === 'roundRest' ? (
-            <Text style={styles.upNext}>Next: Round {roundIndex + 2}</Text>
+            <Text style={styles.upNext}>Next: Set {roundIndex + 2}</Text>
           ) : null}
           <TouchableOpacity style={[styles.bigBtn, styles.bigBtnAlt]} onPress={skipRest}>
             <Text style={[styles.bigBtnText, styles.bigBtnTextAlt]}>Skip Rest</Text>
@@ -463,15 +314,33 @@ export default function GuidedWorkoutSession({ template, onComplete, onExit }) {
       )}
 
       {phase === 'done' && (
-        <View style={styles.center}>
+        <ScrollView contentContainerStyle={styles.introScroll}>
           <Text style={styles.title}>Session complete 💪</Text>
-          <Text style={styles.subtitle}>
-            {template.rounds} rounds of {template.name} logged.
-          </Text>
-          <TouchableOpacity style={styles.bigBtn} onPress={onExit}>
+          <Text style={styles.subtitle}>Today's exercise logged.</Text>
+          <Text style={[styles.previewName, { marginBottom: 10 }]}>Completion</Text>
+          {entriesRef.current.map((e, i) => {
+            const b = blocks.find((bl) => bl.name === e.name);
+            const target = b ? (b.mode === 'time' ? b.seconds : b.target) : null;
+            const hit = target != null && e.value >= target;
+            return (
+              <View key={i} style={styles.previewRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.previewName}>{e.name}</Text>
+                  <Text style={styles.completionSub}>
+                    {e.mode === 'time' ? `${e.value}s held` : `${e.value} reps`}
+                    {target != null ? ` (target ${target}${e.mode === 'time' ? 's' : ''})` : ''}
+                  </Text>
+                </View>
+                <Text style={hit ? styles.completionHit : styles.completionMiss}>
+                  {target == null ? '—' : hit ? '✓ Hit' : '↓ Under'}
+                </Text>
+              </View>
+            );
+          })}
+          <TouchableOpacity style={[styles.bigBtn, { marginTop: 20 }]} onPress={onExit}>
             <Text style={styles.bigBtnText}>Done</Text>
           </TouchableOpacity>
-        </View>
+        </ScrollView>
       )}
     </View>
   );
@@ -496,6 +365,7 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   title: { color: '#fff', fontSize: 24, fontWeight: '800', textAlign: 'center', marginBottom: 8 },
   subtitle: { color: DIM, fontSize: 14, textAlign: 'center', marginBottom: 20 },
+  rampNote: { color: GOLD, fontSize: 13, fontWeight: '700', textAlign: 'center', marginTop: -12, marginBottom: 20 },
   previewRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -510,6 +380,10 @@ const styles = StyleSheet.create({
   },
   previewName: { color: INK, fontSize: 15, fontWeight: '600', flex: 1 },
   previewTarget: { color: GOLD, fontSize: 14, fontWeight: '700' },
+  completionSub: { color: DIM, fontSize: 12, marginTop: 2 },
+  completionHit: { color: '#5fd57a', fontSize: 13, fontWeight: '800', marginLeft: 10 },
+  completionMiss: { color: '#e0a940', fontSize: 13, fontWeight: '800', marginLeft: 10 },
+  completionMid: { color: DIM, fontSize: 13, fontWeight: '700', marginLeft: 10 },
   phaseLabel: {
     color: DIM,
     fontSize: 13,

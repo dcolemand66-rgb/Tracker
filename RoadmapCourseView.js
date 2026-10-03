@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ScrollView,
   View,
@@ -18,11 +18,26 @@ import CoursePlayer from './CoursePlayer';
 // The roadmap is a sequence of courses. Opening it drops you straight
 // back where you stopped rather than making you hunt for your place —
 // that was the point of building it as a curriculum rather than a list.
-export default function RoadmapCourseView({ guide, progress, setProgress, onBack }) {
+export default function RoadmapCourseView({ guide, progress, setProgress, onBack, roadmapQuests, onToggleQuest, pendingLesson, onPendingLessonHandled }) {
   const [activeCourseId, setActiveCourseId] = useState(null);
   const [openPhaseId, setOpenPhaseId] = useState(null);
   const [progressOpen, setProgressOpen] = useState(false);
   const [trackOpenId, setTrackOpenId] = useState(null); // per-phase tracker, not the global modal
+  const [deepLinkLessonId, setDeepLinkLessonId] = useState(null);
+
+  // A deep link from Calendar's Quests section - jump straight into the
+  // right course; CoursePlayer (below) handles landing on the right
+  // lesson and part once this opens it. Snapshotted into local state
+  // rather than read straight off the prop, so clearing pendingLesson
+  // upstream can't race with CoursePlayer's own mount.
+  useEffect(() => {
+    if (pendingLesson && pendingLesson.guideId === guide.id && pendingLesson.courseId) {
+      setActiveCourseId(pendingLesson.courseId);
+      setDeepLinkLessonId(pendingLesson.lessonId);
+      if (onPendingLessonHandled) onPendingLessonHandled();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingLesson]);
 
   const prog = progress || {};
   const stats = roadmapStats(prog);
@@ -66,6 +81,27 @@ export default function RoadmapCourseView({ guide, progress, setProgress, onBack
         <TouchableOpacity onPress={onBack} style={styles.backLink}>
           <Text style={styles.backLinkText}>‹ All Roadmaps</Text>
         </TouchableOpacity>
+
+        {roadmapQuests && roadmapQuests.length > 0 ? (
+          <View style={styles.questsCard}>
+            <Text style={styles.questsHead}>📜 Your Quests</Text>
+            {roadmapQuests.map((q) => (
+              <TouchableOpacity
+                key={`${q.cardId}-${q.goalId}-${q.id}`}
+                style={styles.questRow}
+                onPress={() => onToggleQuest && onToggleQuest(q)}
+              >
+                <View style={styles.questCheckbox} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.questText}>{q.text}</Text>
+                  <Text style={styles.questSub}>
+                    {q.cardTitle}{q.goalTitle ? ` · ${q.goalTitle}` : ''}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
 
         <View style={styles.headRow}>
           <View style={{ flex: 1 }}>
@@ -333,7 +369,11 @@ export default function RoadmapCourseView({ guide, progress, setProgress, onBack
             course={COURSES[activeCourseId]}
             progress={prog[`course_${activeCourseId}`]}
             setProgress={(u) => saveCourse(activeCourseId, u)}
-            onExit={() => setActiveCourseId(null)}
+            onExit={() => {
+              setActiveCourseId(null);
+              setDeepLinkLessonId(null);
+            }}
+            initialLessonId={deepLinkLessonId}
           />
         ) : null}
       </Modal>
@@ -425,6 +465,32 @@ export default function RoadmapCourseView({ guide, progress, setProgress, onBack
 const styles = StyleSheet.create({
   backLink: { paddingVertical: 6, marginBottom: 4 },
   backLinkText: { color: GOLD, fontSize: 14, fontWeight: '700' },
+  questsCard: {
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  questsHead: { color: INK, fontSize: 15, fontWeight: '800', marginBottom: 8 },
+  questRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: BORDER,
+  },
+  questCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: GOLD,
+    marginRight: 10,
+  },
+  questText: { color: INK, fontSize: 14, fontWeight: '600' },
+  questSub: { color: DIM, fontSize: 11.5, marginTop: 2 },
   headRow: { flexDirection: 'row', alignItems: 'flex-start' },
   progBtn: {
     backgroundColor: CARD, borderWidth: 1, borderColor: BORDER,

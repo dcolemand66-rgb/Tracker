@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ScrollView,
   View,
@@ -12,13 +12,22 @@ import {
 } from 'react-native';
 import { pickCompressedImage } from './imagePicker';
 import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER, SWATCHES } from './theme';
+import { ROADMAPS_THEME } from './pageThemes';
+import PageHeader from './PageHeader';
 import { xpForLevel, applyXPDelta, resetRoadmapProgress } from './leveling';
-import { DAY_LETTERS } from './habitUtils';
+import { DAY_LETTERS, toggleHabitCompletion, HABIT_POINTS, firstStepPerRoadmap } from './habitUtils';
 import HeroArena from './RoadmapIdleWorld';
 import RoadmapGuideView from './RoadmapGuideView';
 import RoadmapCourseView from './RoadmapCourseView';
 import { ROADMAP_GUIDES, guideStepCount, guideDoneCount } from './roadmapGuides';
-import { WEAPON_TIERS, ARMOR_TIERS, ENERGY_PER_TASK, MAX_ENERGY, minionFightCost } from './heroUtils';
+import {
+  WEAPON_TIERS,
+  ARMOR_TIERS,
+  ENERGY_PER_TASK,
+  MAX_ENERGY,
+  minionCostWithDiscipline,
+  minionRewardWithCharisma,
+} from './heroUtils';
 
 const POINTS = { TASK: 5, GOAL_BONUS: 20, CARD_BONUS: 100 };
 const ICON_CHOICES = ['💪','🧠','🎭','⏱️','🔥','💡','🎯','🍀','⭐','⚔️','🛡️','📚','🎨','🏃','💰','❤️','🎮','🎵','🧘','✨'];
@@ -100,8 +109,19 @@ export default function RoadmapsScreen({
   guideProgress,
   setGuideProgress,
   onGoToCalendar,
+  pendingLesson,
+  onPendingLessonHandled,
 }) {
   const [openGuideId, setOpenGuideId] = useState(null);
+
+  // A deep link from Calendar's Quests section arrives as which guide to
+  // open; RoadmapCourseView (rendered below once openGuideId is set)
+  // handles landing on the actual course/lesson/part from here.
+  useEffect(() => {
+    if (pendingLesson && pendingLesson.guideId) {
+      setOpenGuideId(pendingLesson.guideId);
+    }
+  }, [pendingLesson]);
   const ALL_COLORS = [...SWATCHES, ...(customColors || [])];
   const [view, setView] = useState('list'); // 'list' | 'card' | 'goal'
   // Manage-roadmap-cards screen (create/edit goal cards) - real CRUD
@@ -120,7 +140,7 @@ export default function RoadmapsScreen({
   const [goalAddText, setGoalAddText] = useState('');
 
   const [goalSettingsOpen, setGoalSettingsOpen] = useState(false);
-  const [goalSettingsDraft, setGoalSettingsDraft] = useState({ text: '', image: null });
+  const [goalSettingsDraft, setGoalSettingsDraft] = useState({ text: '', image: null, habits: [] });
 
   const [taskAddOpen, setTaskAddOpen] = useState(false);
   const [taskAddText, setTaskAddText] = useState('');
@@ -287,7 +307,7 @@ export default function RoadmapsScreen({
   }
 
   function openGoalSettings(goal) {
-    setGoalSettingsDraft({ text: goal.text, image: goal.image || null });
+    setGoalSettingsDraft({ text: goal.text, image: goal.image || null, habits: goal.habits || [] });
     setGoalSettingsOpen(true);
   }
 
@@ -298,13 +318,23 @@ export default function RoadmapsScreen({
     }
   }
 
+  function toggleGoalHabit(habitId) {
+    setGoalSettingsDraft((d) => {
+      const current = d.habits || [];
+      return {
+        ...d,
+        habits: current.includes(habitId) ? current.filter((id) => id !== habitId) : [...current, habitId],
+      };
+    });
+  }
+
   function saveGoalSettings() {
     const text = goalSettingsDraft.text.trim();
     if (!text) return;
     updateCard(currentCardId, (c) => ({
       ...c,
       goals: (c.goals || []).map((g) =>
-        g.id === currentGoalId ? { ...g, text, image: goalSettingsDraft.image } : g
+        g.id === currentGoalId ? { ...g, text, image: goalSettingsDraft.image, habits: goalSettingsDraft.habits || [] } : g
       ),
     }));
     setGoalSettingsOpen(false);
@@ -387,6 +417,28 @@ export default function RoadmapsScreen({
   // currentCardId/currentGoalId in scope.
   function toggleTask(task) {
     toggleTaskIn(currentCardId, currentGoalId, task);
+  }
+
+  // One "quest" per ROADMAP (its single next step) - same computation the
+  // Calendar's Quests section uses - so course/guide views can show "where
+  // you stand" across your roadmaps without navigating away.
+  const roadmapQuests = firstStepPerRoadmap(cards, habits);
+
+  function toggleQuestItem(q) {
+    if (q.kind === 'habit') {
+      toggleHabitCompletion(q.habit, {
+        setHabits,
+        setLevel,
+        setRewardPoints,
+        setHero,
+        applyXPDelta,
+        HABIT_POINTS,
+        cards,
+        setStats,
+      });
+      return;
+    }
+    toggleTaskIn(q.cardId, q.goalId, q);
   }
 
   function deleteTask(taskId) {
@@ -541,14 +593,14 @@ export default function RoadmapsScreen({
   // kill, which is what actually makes "progressing to a new zone" mean
   // something rather than just a visual reskin.
   function fightMinion(zoneTier = 1) {
-    const cost = minionFightCost(hero.weaponTier);
+    const cost = minionCostWithDiscipline(hero.weaponTier, stats);
     if (hero.energy < cost) return;
     setHero((h) => ({
       ...h,
       energy: Math.max(0, h.energy - cost),
       minionsDefeated: h.minionsDefeated + 1,
     }));
-    setRewardPoints((p) => p + 2 * zoneTier);
+    setRewardPoints((p) => p + minionRewardWithCharisma(zoneTier, stats));
   }
 
   function handleBossDefeated() {
@@ -585,6 +637,10 @@ export default function RoadmapsScreen({
           progress={guideProgress}
           setProgress={setGuideProgress}
           onBack={() => setOpenGuideId(null)}
+          roadmapQuests={roadmapQuests}
+          onToggleQuest={toggleQuestItem}
+          pendingLesson={pendingLesson}
+          onPendingLessonHandled={onPendingLessonHandled}
         />
       );
     }
@@ -610,7 +666,7 @@ export default function RoadmapsScreen({
             <TouchableOpacity onPress={() => setManageCardsOpen(false)} style={{ marginBottom: 8 }}>
               <Text style={{ color: GOLD, fontSize: 15, fontWeight: '700' }}>‹ Back to the game</Text>
             </TouchableOpacity>
-            <Text style={shared.h1}>Roadmaps</Text>
+            <PageHeader theme={ROADMAPS_THEME} title="Roadmaps" />
             <Text style={shared.tagline}>Quests you're working toward</Text>
 
             {cards.length === 0 ? (
@@ -699,6 +755,8 @@ export default function RoadmapsScreen({
           setHero={setHero}
           habits={habits}
           cards={cards}
+          stats={stats}
+          guideProgress={guideProgress}
           rewardPoints={rewardPoints}
           setRewardPoints={setRewardPoints}
           onFightMinion={fightMinion}
@@ -780,7 +838,7 @@ export default function RoadmapsScreen({
         </ScrollView>
 
         <TouchableOpacity
-          style={styles.fab}
+          style={[styles.fab, { backgroundColor: ROADMAPS_THEME.accent, shadowColor: ROADMAPS_THEME.accent }]}
           onPress={() => {
             setGoalAddText('');
             setGoalAddOpen(true);
@@ -1018,6 +1076,43 @@ export default function RoadmapsScreen({
               placeholder="Goal name"
               placeholderTextColor="#9aa5b1"
             />
+            <Text style={[styles.label, { marginTop: 10 }]}>Linked habits</Text>
+            <Text style={{ color: '#9aa5b1', fontSize: 12, marginBottom: 6 }}>
+              Completing a linked habit now feeds this goal's stats, same as checking off a task.
+            </Text>
+            {(habits || []).length === 0 ? (
+              <Text style={{ color: '#9aa5b1', fontSize: 12, marginBottom: 8 }}>No habits yet.</Text>
+            ) : (
+              <ScrollView style={{ maxHeight: 160, marginBottom: 8 }}>
+                {(habits || []).map((h) => {
+                  const on = (goalSettingsDraft.habits || []).includes(h.id);
+                  return (
+                    <TouchableOpacity
+                      key={h.id}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingVertical: 8,
+                        borderBottomWidth: 1,
+                        borderBottomColor: 'rgba(255,255,255,0.08)',
+                      }}
+                      onPress={() => toggleGoalHabit(h.id)}
+                    >
+                      <Text style={{ color: '#fff', fontSize: 14 }}>{h.text}</Text>
+                      <View
+                        style={[
+                          styles.checkbox,
+                          on && styles.checkboxDone,
+                        ]}
+                      >
+                        {on ? <Text style={styles.checkMark}>✓</Text> : null}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
             <TouchableOpacity style={styles.saveBtn} onPress={saveGoalSettings}>
               <Text style={styles.saveBtnText}>Save Changes</Text>
             </TouchableOpacity>

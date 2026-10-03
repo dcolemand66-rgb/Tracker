@@ -5,7 +5,10 @@ import {
   WEAPON_TIERS,
   ARMOR_TIERS,
   MINIONS_PER_LEVEL_QUOTA,
-  minionFightCost,
+  minionCostWithDiscipline,
+  heroPower,
+  statLevel,
+  BOSS_ATTACK_ENERGY_COST,
   HERO_FRAMES,
   minionFramesFor,
   BOSS_FRAMES,
@@ -14,11 +17,14 @@ import {
 
 const FRAME_INTERVAL = 380; // ms between walk/animation frame swaps
 
-export default function HeroArena({ level, xp, hero, onFightMinion, onBossDefeated }) {
+export default function HeroArena({ level, xp, hero, stats, onFightMinion, onAttackBoss, onBossDefeated }) {
   const weapon = WEAPON_TIERS[hero.weaponTier] || WEAPON_TIERS[0];
   const armor = ARMOR_TIERS[hero.armorTier] || ARMOR_TIERS[0];
   const bossUnlocked = hero.minionsDefeated >= MINIONS_PER_LEVEL_QUOTA;
-  const cost = minionFightCost(hero.weaponTier);
+  const cost = minionCostWithDiscipline(hero.weaponTier, stats);
+  const power = heroPower(hero, stats);
+  const strengthLevel = statLevel(stats, 'Strength');
+  const disciplineLevel = statLevel(stats, 'Discipline');
 
   const needed = xpForLevel(level);
   const healthPct = Math.max(0, Math.min(100, 100 - (xp / needed) * 100));
@@ -68,6 +74,13 @@ export default function HeroArena({ level, xp, hero, onFightMinion, onBossDefeat
       setPoof(true);
       setTimeout(() => setPoof(false), 400);
       onFightMinion();
+    });
+  }
+
+  function handleAttackBoss() {
+    if (hero.energy < BOSS_ATTACK_ENERGY_COST) return;
+    playAttack(() => {
+      if (onAttackBoss) onAttackBoss();
     });
   }
 
@@ -174,6 +187,11 @@ export default function HeroArena({ level, xp, hero, onFightMinion, onBossDefeat
         )}
       </View>
 
+      <Text style={styles.powerLine}>
+        ⚔ {power} ATK ({weapon.name}{strengthLevel > 1 ? ` +${(strengthLevel - 1) * 2} Strength` : ''})
+        {disciplineLevel > 1 ? `  ·  Discipline -${disciplineLevel - 1} energy cost` : ''}
+      </Text>
+
       {!bossUnlocked ? (
         <>
           <Text style={styles.phaseLabel}>
@@ -198,11 +216,17 @@ export default function HeroArena({ level, xp, hero, onFightMinion, onBossDefeat
             <Animated.View pointerEvents="none" style={[styles.flashOverlay, { opacity: flashInterp }]} />
           </View>
           {defeated ? <Text style={styles.defeatedText}>DEFEATED!</Text> : null}
-          <TouchableOpacity style={styles.fightBtn} onPress={() => playAttack()}>
-            <Text style={styles.fightBtnText}>⚔️ Attack Boss</Text>
+          <TouchableOpacity
+            style={[styles.fightBtn, hero.energy < BOSS_ATTACK_ENERGY_COST && styles.fightBtnDisabled]}
+            disabled={hero.energy < BOSS_ATTACK_ENERGY_COST}
+            onPress={handleAttackBoss}
+          >
+            <Text style={styles.fightBtnText}>
+              ⚔️ Attack Boss (-{BOSS_ATTACK_ENERGY_COST} energy, {power} dmg)
+            </Text>
           </TouchableOpacity>
           <Text style={styles.hint}>
-            {Math.round(xpForLevel(level) - xp)} XP from real tasks until it falls.
+            {Math.round(xpForLevel(level) - xp)} XP left — from real tasks, or your own attacks above.
           </Text>
         </>
       )}
@@ -258,6 +282,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 8,
     letterSpacing: 0.5,
+    textShadowColor: '#000',
+    textShadowRadius: 3,
+  },
+  powerLine: {
+    color: '#ffd76b',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 6,
     textShadowColor: '#000',
     textShadowRadius: 3,
   },

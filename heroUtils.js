@@ -50,6 +50,46 @@ export function minionFightCost(weaponTier) {
   return Math.max(15, 30 - weaponTier * 3);
 }
 
+// The missing link: stats earned from tasks/habits now actually feed
+// combat instead of being cosmetic numbers. Strength adds real attack
+// power on top of whatever weapon tier you've bought; Discipline makes
+// clearing minions cheaper; Charisma adds bonus reward points per kill.
+// Level 1 is the stat's starting point, so bonuses start at level 2.
+export function statLevel(stats, name) {
+  const s = (stats || []).find((st) => st.name === name);
+  return s ? s.level : 1;
+}
+
+// Weapon tier is still the main driver (that's what reward points buy),
+// but Strength now adds real, visible bonus attack on top of it.
+export function heroPower(hero, stats) {
+  const weapon = WEAPON_TIERS[hero.weaponTier] || WEAPON_TIERS[0];
+  const strengthBonus = (statLevel(stats, 'Strength') - 1) * 2;
+  return weapon.atk + strengthBonus;
+}
+
+export function minionCostWithDiscipline(weaponTier, stats) {
+  const disciplineDiscount = statLevel(stats, 'Discipline') - 1;
+  return Math.max(5, minionFightCost(weaponTier) - disciplineDiscount);
+}
+
+export function minionRewardWithCharisma(zoneTier, stats) {
+  const charismaBonus = Math.floor((statLevel(stats, 'Charisma') - 1) / 2);
+  return 2 * zoneTier + charismaBonus;
+}
+
+// The "Attack Boss" button used to just play an animation and do nothing
+// else - pressing it had zero effect on the fight. It now actually costs
+// energy (so it's still funded by real tasks/habits, not free) and deals
+// real bonus XP scaled by heroPower, so investing in weapon tier and
+// Strength has a felt, immediate effect instead of only existing on a
+// shop screen.
+export const BOSS_ATTACK_ENERGY_COST = 10;
+
+export function bossAttackDamage(hero, stats) {
+  return heroPower(hero, stats);
+}
+
 // --- Original geometric pixel-art sprites (hand-drawn with PIL, not an
 // external asset pack) so they're small, crisp, and copyright-clean.
 // Each animated character has 2 frames swapped on a timer for real
