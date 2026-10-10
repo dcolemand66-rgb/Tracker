@@ -1,8 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   Image,
   Animated,
   StyleSheet,
@@ -11,16 +12,32 @@ import {
   Modal,
   useWindowDimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import YoutubePlayer from 'react-native-youtube-iframe';
 import { LinearGradient } from 'expo-linear-gradient';
 import { INK, DIM, CARD, BORDER } from './theme';
-import { releasedEpisodeCount } from './trackerMath';
+import { releasedEpisodeCount, daysUntilRelease } from './trackerMath';
 
 function formatReleaseDate(val) {
   if (!val) return '';
   const d = new Date(val + 'T00:00:00');
   if (isNaN(d.getTime())) return val;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// A short "time until it's out" label for the front of a Coming Soon
+// card - "In 12 days" reads at a glance without flipping, which a bare
+// ribbon/date never could. Free-text dates ("Fall 2026") get shown as
+// typed since there's no real countdown to compute.
+function formatCountdown(releaseDate) {
+  if (!releaseDate) return 'Date TBA';
+  const days = daysUntilRelease(releaseDate);
+  if (days == null) return releaseDate;
+  if (days <= 0) return 'Out today';
+  if (days === 1) return 'In 1 day';
+  if (days < 14) return `In ${days} days`;
+  if (days < 60) return `In ${Math.round(days / 7)} wk`;
+  return formatReleaseDate(releaseDate);
 }
 
 function getYouTubeId(url) {
@@ -65,6 +82,12 @@ export default function TrackerCard({
   const [flipped, setFlipped] = useState(false);
   const [trailerOpen, setTrailerOpen] = useState(false);
   const anim = useRef(new Animated.Value(0)).current;
+  // app.json has edgeToEdgeEnabled:true, which draws every screen -
+  // modals included - under the status bar at the OS level. A Modal's
+  // own statusBarTranslucent prop doesn't override that, so the trailer
+  // player needs its own top padding or it renders right under the
+  // clock/battery icons instead of below them.
+  const insets = useSafeAreaInsets();
 
   // Percentage width + aspectRatio doesn't reliably resolve a height
   // inside a flexWrap row (it can come out as 0 on some RN/Yoga
@@ -74,8 +97,12 @@ export default function TrackerCard({
   // container padding (16 each side) and the gap its grid's
   // justifyContent:'space-between' leaves between two columns (12).
   const { width: winWidth } = useWindowDimensions();
-  const GRID_H_PADDING = 16;
-  const CARD_GAP = 12;
+  // Tightened from 16/12 so the 2-up grid actually uses the screen -
+  // TrackerScreen's grid breaks out of its usual 16px container padding
+  // by the same 6px this trims (16 - 10), so this and that negative
+  // margin have to be changed together.
+  const GRID_H_PADDING = 10;
+  const CARD_GAP = 10;
   const cardWidth = (winWidth - GRID_H_PADDING * 2 - CARD_GAP) / 2;
   // Trailer modal player - sized explicitly (react-native-youtube-iframe
   // wants a real pixel height, not a flex/aspectRatio box) to fill the
@@ -86,37 +113,17 @@ export default function TrackerCard({
   // to the always-available hqdefault.jpg if it 404s.
   const [useMaxRes, setUseMaxRes] = useState(true);
 
-  // Poster art comes in all kinds of aspect ratios - forcing every one
-  // into the same fixed box is what was cropping (with cover) or
-  // letterboxing (with contain) images that didn't match it. Reading
-  // the image's real width/height and using THAT as the card's aspect
-  // ratio means the box always matches the picture exactly, so nothing
-  // gets cut off or padded with black bars. Falls back to the old
-  // movie-poster ratio (2:3-ish) until the real size loads, or if it
-  // fails to load at all.
-  const FALLBACK_RATIO = 3 / 5.6;
-  const [posterRatio, setPosterRatio] = useState(FALLBACK_RATIO);
-  useEffect(() => {
-    if (!item.image) {
-      setPosterRatio(FALLBACK_RATIO);
-      return;
-    }
-    let cancelled = false;
-    Image.getSize(
-      item.image,
-      (w, h) => {
-        if (!cancelled && w > 0 && h > 0) setPosterRatio(w / h);
-      },
-      () => {
-        // Couldn't read real dimensions (bad url, network, etc.) -
-        // just keep the fallback ratio rather than leaving it broken.
-        if (!cancelled) setPosterRatio(FALLBACK_RATIO);
-      }
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [item.image]);
+  // Every card uses the SAME fixed poster ratio (classic movie-poster
+  // 2:3-ish), regardless of what aspect ratio the actual source image
+  // happens to be. An earlier version read each image's real
+  // width/height and sized the card box to match it exactly - that
+  // avoided ever cropping an image, but it meant every card in the grid
+  // came out a different height (whatever ratio that poster happened to
+  // be), which is the "inconsistent tracker sizes" jagged-grid look.
+  // Uniform size across the grid matters more than never cropping a
+  // poster, so this box is fixed and the image is set to resizeMode
+  // "cover" below to fill it.
+  const CARD_RATIO = 3 / 5.6;
 
   function flip() {
     Animated.spring(anim, {
@@ -128,8 +135,7 @@ export default function TrackerCard({
     setFlipped(!flipped);
   }
 
-  const ratio = item.image ? posterRatio : FALLBACK_RATIO;
-  const cardHeight = cardWidth / ratio;
+  const cardHeight = cardWidth / CARD_RATIO;
 
   const frontRotate = anim.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
   const backRotate = anim.interpolate({ inputRange: [0, 1], outputRange: ['180deg', '360deg'] });
@@ -172,7 +178,7 @@ export default function TrackerCard({
         <Animated.View style={[styles.face, { transform: [{ rotateY: frontRotate }] }]}>
           <View style={styles.poster}>
             {item.image ? (
-              <Image source={{ uri: item.image }} style={styles.posterImg} resizeMode="contain" />
+              <Image source={{ uri: item.image }} style={styles.posterImg} resizeMode="cover" />
             ) : ytId ? (
               <Image
                 source={{
@@ -188,8 +194,14 @@ export default function TrackerCard({
               </View>
             )}
 
-            {ytId ? (
-              <View style={styles.playBadge}>
+            {ytId && comingSoon ? (
+              // Purely decorative - a plain View, not its own touch
+              // target, so it never steals the tap from the flip that
+              // covers the whole front face. Trailers only show up
+              // before release (point 5), this badge just flags that
+              // there's one; opening it happens from the small icon on
+              // the back header instead.
+              <View style={styles.playBadge} pointerEvents="none">
                 <Text style={styles.playBadgeText}>▶</Text>
               </View>
             ) : null}
@@ -219,7 +231,13 @@ export default function TrackerCard({
               <Text style={styles.posterTitle} numberOfLines={2}>
                 {item.title}
               </Text>
-              {!comingSoon ? (
+              {comingSoon ? (
+                <View style={styles.frontStatusRow}>
+                  <Text style={[styles.frontStatusText, styles.frontCountdownText]}>
+                    📅 {formatCountdown(item.releaseDate)}
+                  </Text>
+                </View>
+              ) : (
                 <View style={styles.frontStatusRow}>
                   {finished ? (
                     <Text style={styles.frontStatusText}>✓ Finished</Text>
@@ -254,53 +272,63 @@ export default function TrackerCard({
                     <Text style={styles.frontStatusText}>Not started</Text>
                   )}
                 </View>
+              )}
+              {!comingSoon && released != null ? (
+                <Text style={[styles.frontStatusText, styles.frontReleasedText]}>
+                  📡 {released}/{epTotal} released{stillAiring ? '' : ' · fully aired'}
+                </Text>
               ) : null}
             </LinearGradient>
           </View>
         </Animated.View>
       </TouchableOpacity>
 
-      {/* BACK */}
+      {/* BACK - the whole face flips back on tap now, same as the front,
+          rather than requiring a specific header zone or button; every
+          button/stepper/chip inside still keeps its own tap untouched by
+          flipping (a nested Touchable always wins over an ancestor's),
+          including while scrolling the status block below. */}
       <Animated.View
         pointerEvents={flipped ? 'auto' : 'none'}
         style={[styles.face, styles.faceBack, { transform: [{ rotateY: backRotate }] }]}
       >
-        <View style={[styles.backAccent, { backgroundColor: color }]} />
+        <TouchableWithoutFeedback onPress={flip}>
+          <View style={styles.backInner}>
+            <View style={[styles.backAccent, { backgroundColor: color }]} />
 
-        {/* Tapping THIS header is the only way to flip back - it's a
-            dedicated zone, not the whole face, so it can never swallow a
-            tap meant for a stepper or action button sitting below it. */}
-        <TouchableOpacity style={styles.backHeader} activeOpacity={0.7} onPress={flip}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.backTitle} numberOfLines={1}>
-              {item.title}
-            </Text>
-            <View style={[styles.labelPill, { backgroundColor: color + '2A', borderColor: color + '55' }]}>
-              <Text style={[styles.labelPillText, { color }]}>{label}</Text>
+            <View style={styles.backHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.backTitle} numberOfLines={1}>
+                  {item.title}
+                </Text>
+                <View style={[styles.labelPill, { backgroundColor: color + '2A', borderColor: color + '55' }]}>
+                  <Text style={[styles.labelPillText, { color }]}>{label}</Text>
+                </View>
+              </View>
+              {ytId && comingSoon ? (
+                // The only way to open the trailer now - small and
+                // icon-only on purpose (point 4: the old full-width
+                // button "took up space and didn't look right"), and
+                // its own touch target nested inside everything else
+                // here that flips, so tapping it opens the trailer
+                // instead.
+                <TouchableOpacity
+                  style={[styles.trailerIconBtn, { borderColor: color }]}
+                  onPress={() => setTrailerOpen(true)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Text style={[styles.trailerIconBtnText, { color }]}>▶</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
-          </View>
-          <Text style={styles.flipHint}>↺</Text>
-        </TouchableOpacity>
 
-        <View style={styles.divider} />
+            <View style={styles.divider} />
 
         <ScrollView
           style={styles.backContent}
           contentContainerStyle={styles.backContentInner}
           showsVerticalScrollIndicator={false}
         >
-          {ytId ? (
-            <TouchableOpacity
-              style={[styles.watchTrailerBtn, { borderColor: color }]}
-              onPress={() => setTrailerOpen(true)}
-            >
-              <View style={[styles.watchTrailerIcon, { backgroundColor: color }]}>
-                <Text style={styles.watchTrailerIconText}>▶</Text>
-              </View>
-              <Text style={[styles.watchTrailerBtnText, { color }]}>Watch Trailer</Text>
-            </TouchableOpacity>
-          ) : null}
-
           {comingSoon ? (
             <View style={styles.statusBlock}>
               <Text style={styles.statusIcon}>📅</Text>
@@ -451,7 +479,10 @@ export default function TrackerCard({
           <TouchableOpacity style={styles.actionChip} onPress={onEdit}>
             <Text style={styles.actionChipText}>✎ Edit</Text>
           </TouchableOpacity>
-          {item.mediaUrl ? (
+          {/* Trailer link only while it's still a trailer - once the
+              thing has actually come out, "watch the trailer" stops
+              being useful and the chip just goes away. */}
+          {item.mediaUrl && comingSoon ? (
             <TouchableOpacity
               style={styles.actionChip}
               onPress={() => Linking.openURL(item.mediaUrl)}
@@ -459,7 +490,9 @@ export default function TrackerCard({
               <Text style={styles.actionChipText}>{ytId ? 'Open in YouTube ↗' : '▶ Watch'}</Text>
             </TouchableOpacity>
           ) : null}
-        </View>
+            </View>
+          </View>
+        </TouchableWithoutFeedback>
       </Animated.View>
 
       {/* Trailer plays here, full-screen, instead of cramped inside the
@@ -469,9 +502,8 @@ export default function TrackerCard({
         visible={trailerOpen}
         animationType="slide"
         onRequestClose={() => setTrailerOpen(false)}
-        statusBarTranslucent
       >
-        <View style={styles.trailerModal}>
+        <View style={[styles.trailerModal, { paddingTop: insets.top }]}>
           <View style={[styles.trailerPlayerWrap, { height: playerHeight }]}>
             {ytId ? (
               <YoutubePlayer
@@ -548,6 +580,8 @@ const styles = StyleSheet.create({
   },
   frontBarFill: { height: '100%', borderRadius: 2 },
   frontStatusText: { color: '#fff', fontSize: 10, fontWeight: '800', opacity: 0.9 },
+  frontCountdownText: { fontSize: 11 },
+  frontReleasedText: { color: '#d9c9f0', fontSize: 9.5, fontWeight: '700', marginTop: 3, opacity: 0.9 },
   playBadge: {
     position: 'absolute', top: 8, left: 8,
     width: 26, height: 26, borderRadius: 13,
@@ -563,9 +597,16 @@ const styles = StyleSheet.create({
   faceBack: {
     backgroundColor: '#161d26', flexDirection: 'column',
   },
+  // Fills the whole flip face so the TouchableWithoutFeedback wrapping
+  // it has somewhere to register taps outside the header/scroll content.
+  backInner: { flex: 1 },
   backAccent: { height: 4, width: '100%' },
   backHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingTop: 10 },
-  flipHint: { color: DIM, fontSize: 16, marginLeft: 8 },
+  trailerIconBtn: {
+    width: 28, height: 28, borderRadius: 14, borderWidth: 1.3,
+    alignItems: 'center', justifyContent: 'center', marginLeft: 8,
+  },
+  trailerIconBtnText: { fontSize: 11, marginLeft: 1 },
   backContent: { flex: 1 },
   backContentInner: { paddingHorizontal: 12, paddingBottom: 12, flexGrow: 1 },
   backTitle: { color: '#fff', fontSize: 15, fontWeight: '800', lineHeight: 19 },
@@ -577,17 +618,6 @@ const styles = StyleSheet.create({
   divider: {
     height: StyleSheet.hairlineWidth, backgroundColor: BORDER, marginTop: 8, marginBottom: 8, marginHorizontal: 12,
   },
-  watchTrailerBtn: {
-    flexDirection: 'row', alignItems: 'center', alignSelf: 'stretch',
-    borderWidth: 1.3, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12,
-    marginBottom: 10,
-  },
-  watchTrailerIcon: {
-    width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center',
-    marginRight: 10,
-  },
-  watchTrailerIconText: { color: '#fff', fontSize: 11, marginLeft: 1 },
-  watchTrailerBtnText: { fontSize: 13.5, fontWeight: '800' },
   statusBlock: { alignItems: 'flex-start' },
   statusIcon: { fontSize: 18, marginBottom: 2 },
   statusText: { color: INK, fontSize: 14, fontWeight: '800' },
@@ -635,6 +665,7 @@ const styles = StyleSheet.create({
   trailerModal: { flex: 1, backgroundColor: '#0c0a0a' },
   trailerPlayerWrap: {
     width: '100%', backgroundColor: '#000', position: 'relative',
+    alignItems: 'center', justifyContent: 'center',
   },
   trailerCloseBtn: {
     position: 'absolute', top: 14, right: 14,

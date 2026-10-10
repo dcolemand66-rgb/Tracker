@@ -100,7 +100,7 @@ function dateToTimeString(d) {
 }
 
 export default function HabitsDetailScreen({ habits, setHabits, level, setLevel, rewardPoints, setRewardPoints, hero, setHero, cards, setCards, stats, setStats, meditationSettings, bodyWorkouts, setBodyWorkouts, bodyExercises, pendingHabitId, onPendingHandled,
-  bodyRoutines, setBodyRoutines }) {
+  bodyRoutines, setBodyRoutines, bodyInventory, setBodyInventory }) {
   const [detailId, setDetailId] = useState(null);
   // Separate from detailId on purpose: detailId controls the detail
   // Modal, activeHabitId controls the video/meditation Modal. Both used
@@ -184,6 +184,34 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
           : h
       )
     );
+  }
+
+  // --- Self-care supplies (moved here from the old standalone Inventory
+  // tab's "Self Care" section, so what you have on hand sits right next
+  // to the routine that uses it instead of a separate screen). ---
+  const [supplyName, setSupplyName] = useState('');
+  const [supplyAmount, setSupplyAmount] = useState('');
+
+  function addSupply() {
+    const name = supplyName.trim();
+    if (!name) return;
+    setBodyInventory((prev) => [
+      ...(prev || []),
+      { id: 'sci' + Date.now() + Math.random().toString(36).slice(2, 8), name, amount: supplyAmount.trim(), notes: '', image: null },
+    ]);
+    setSupplyName('');
+    setSupplyAmount('');
+  }
+
+  function removeSupply(item) {
+    Alert.alert('Remove this item?', item.name, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => setBodyInventory((prev) => (prev || []).filter((x) => x.id !== item.id)),
+      },
+    ]);
   }
 
   const detailHabit = habits.find((h) => h.id === detailId);
@@ -893,8 +921,8 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                   ) : null}
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={styles.streakText}>
-                    {streak > 0 ? `🔥 ${streak}` : `${total} logged`}
+                  <Text style={[styles.streakText, streak === 0 && styles.streakTextZero]}>
+                    {streak > 0 ? `🔥 ${streak}` : '0 day streak'}
                   </Text>
                   {scheduledToday ? (
                     <Text style={[styles.todayBadge, doneToday && styles.todayBadgeDone]}>
@@ -1381,6 +1409,46 @@ export default function HabitsDetailScreen({ habits, setHabits, level, setLevel,
                     >
                       <Text style={styles.watchBtnText}>✨ Begin Routine</Text>
                     </TouchableOpacity>
+
+                    <Text style={[styles.label, { marginTop: 20 }]}>Supplies</Text>
+                    {(bodyInventory || []).length === 0 ? (
+                      <Text style={shared.tagline}>
+                        Nothing here yet — add shampoo, lotion, razors, whatever you
+                        restock for this routine.
+                      </Text>
+                    ) : (
+                      (bodyInventory || []).map((it) => (
+                        <TouchableOpacity
+                          key={it.id}
+                          style={styles.historyRow}
+                          onLongPress={() => removeSupply(it)}
+                          delayLongPress={400}
+                        >
+                          <Text style={styles.historyDate}>{it.name}</Text>
+                          {it.amount ? <Text style={styles.historySeconds}>{it.amount}</Text> : null}
+                        </TouchableOpacity>
+                      ))
+                    )}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }}>
+                      <TextInput
+                        style={[styles.input, { flex: 2 }]}
+                        value={supplyName}
+                        onChangeText={setSupplyName}
+                        placeholder="Item name"
+                        placeholderTextColor="#9aa5b1"
+                      />
+                      <TextInput
+                        style={[styles.input, { flex: 1 }]}
+                        value={supplyAmount}
+                        onChangeText={setSupplyAmount}
+                        placeholder="Qty"
+                        placeholderTextColor="#9aa5b1"
+                      />
+                      <TouchableOpacity style={styles.supplyAddBtn} onPress={addSupply}>
+                        <Text style={styles.supplyAddBtnText}>Add</Text>
+                      </TouchableOpacity>
+                    </View>
+                    <Text style={[shared.tagline, { marginTop: 6 }]}>Long-press an item to remove it.</Text>
 
                     <Text style={[styles.label, { marginTop: 20 }]}>Tracker</Text>
                     {(() => {
@@ -2175,6 +2243,7 @@ const styles = StyleSheet.create({
   clockLink: { alignItems: 'center', paddingVertical: 8 },
   clockLinkText: { color: GOLD, fontSize: 12, fontWeight: '600' },
   streakText: { fontSize: 12, fontWeight: '700', color: GOLD },
+  streakTextZero: { color: DIM },
   todayBadge: { fontSize: 10, color: DIM, marginTop: 4, fontWeight: '600' },
   todayBadgeDone: { color: '#2e9e5b' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
@@ -2296,6 +2365,13 @@ const styles = StyleSheet.create({
   },
   historyDate: { fontSize: 13, color: DIM },
   historySeconds: { fontSize: 13, color: INK, fontWeight: '700' },
+  supplyAddBtn: {
+    backgroundColor: GOLD,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  supplyAddBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   label: { fontSize: 12, fontWeight: '600', color: DIM, marginTop: 12, marginBottom: 6 },
   input: {
     backgroundColor: '#232d3a',

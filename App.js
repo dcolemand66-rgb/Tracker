@@ -26,7 +26,6 @@ import {
   useSafeAreaInsets,
 } from 'react-native-safe-area-context';
 import CalendarScreen from './CalendarScreen';
-import InventoryScreen from './InventoryScreen';
 import RoadmapsScreen from './RoadmapsScreen';
 import PlacesScreen from './PlacesScreen';
 import BuylistScreen from './BuylistScreen';
@@ -85,7 +84,6 @@ const TAB_LABELS = {
   recipes: 'Recipes',
   places: 'Places',
   travel: 'Traveling',
-  inventory: 'Inventory',
   restaurants: 'Restaurants',
   settings: 'Settings',
   habits: 'Habits',
@@ -118,6 +116,11 @@ function MainApp() {
   const [categories, setCategories] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [groceries, setGroceries] = useState([]);
+  // Recurring "must-have" groceries (eggs, milk, etc.) - separate from
+  // the regular one-off shopping list in `groceries` above, so a staple
+  // you're currently stocked on doesn't need to be re-added every time;
+  // you just flip it back to "need it" once it runs out.
+  const [groceryStaples, setGroceryStaples] = useState([]);
   const [todoItems, setTodoItems] = useState([]);
   const [habits, setHabits] = useState([]);
   const [hero, setHero] = useState({ weaponTier: 0, armorTier: 0, energy: 0, minionsDefeated: 0 });
@@ -234,6 +237,7 @@ function MainApp() {
       categories,
       recipes,
       groceries,
+      groceryStaples,
       rewardPoints,
       rewardItems,
       rewardHistory,
@@ -282,6 +286,7 @@ function MainApp() {
     setCategories(p.categories || []);
     setRecipes(p.recipes || []);
     setGroceries(p.groceries || []);
+    setGroceryStaples(p.groceryStaples || []);
     setRewardPoints(p.rewardPoints || 0);
     setRewardItems(p.rewardItems || []);
     setRewardHistory(p.rewardHistory || []);
@@ -342,6 +347,7 @@ function MainApp() {
         setCategories(saved.categories || []);
         setRecipes(saved.recipes || []);
         setGroceries(saved.groceries || []);
+        setGroceryStaples(saved.groceryStaples || []);
         setRewardPoints(saved.rewardPoints != null ? saved.rewardPoints : 0);
         setRewardItems(saved.rewardItems || []);
         setRewardHistory(saved.rewardHistory || []);
@@ -636,6 +642,7 @@ function MainApp() {
       categories,
       recipes,
       groceries,
+      groceryStaples,
       rewardPoints,
       rewardItems,
       rewardHistory,
@@ -712,6 +719,7 @@ function MainApp() {
     categories,
     recipes,
     groceries,
+    groceryStaples,
     rewardPoints,
     rewardItems,
     rewardHistory,
@@ -934,6 +942,8 @@ function MainApp() {
             setRecipes={setRecipes}
             groceries={groceries}
             setGroceries={setGroceries}
+            groceryStaples={groceryStaples}
+            setGroceryStaples={setGroceryStaples}
             inventory={inventory}
             setInventory={setInventory}
             ingredientLinkMemory={ingredientLinkMemory}
@@ -942,14 +952,6 @@ function MainApp() {
             setGardenItems={setGardenItems}
             preservedItems={preservedItems}
             setPreservedItems={setPreservedItems}
-          />
-        )}
-        {tab === 'inventory' && (
-          <InventoryScreen
-            inventory={inventory}
-            setInventory={setInventory}
-            bodyInventory={bodyInventory}
-            setBodyInventory={setBodyInventory}
           />
         )}
         {tab === 'restaurants' && (
@@ -1005,6 +1007,7 @@ function MainApp() {
             storageBreakdown={{
               Recipes: recipes,
               Groceries: groceries,
+              'Grocery Staples': groceryStaples,
               Inventory: inventory,
               Buylist: buylist,
               Restaurants: restaurants,
@@ -1038,6 +1041,8 @@ function MainApp() {
             onPendingHandled={() => setPendingHabitId(null)}
             bodyRoutines={bodyRoutines}
             setBodyRoutines={setBodyRoutines}
+            bodyInventory={bodyInventory}
+            setBodyInventory={setBodyInventory}
           />
         )}
         </ErrorBoundary>

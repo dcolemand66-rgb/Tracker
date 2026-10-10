@@ -45,34 +45,15 @@ function latestInventoryPrice(item) {
 // it deserves the same price lookup, not a second one that could drift
 // out of sync with it.
 
-export default function InventoryScreen({ inventory, setInventory, bodyInventory, setBodyInventory }) {
-  const [selfCareOpen, setSelfCareOpen] = useState(false);
+// Embedded inside Recipes -> Groceries as the "What You Have" pantry
+// section (this used to be its own standalone Inventory tab - moved here
+// so what you have and what you need to buy live in one place, per
+// "combine inventory to groceries"). `open`/`onToggle` control the
+// collapsible section itself, same pattern as the Staples checklist next
+// to it; `startExpanded` only matters on first mount.
+export default function InventoryScreen({ inventory, setInventory, open, onToggle }) {
   const [scanOpen, setScanOpen] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
-  const [selfCareName, setSelfCareName] = useState('');
-  const [selfCareAmount, setSelfCareAmount] = useState('');
-
-  function addSelfCareItem() {
-    const name = selfCareName.trim();
-    if (!name) return;
-    setBodyInventory((prev) => [
-      ...prev,
-      { id: 'sci' + Date.now() + Math.random().toString(36).slice(2, 8), name, amount: selfCareAmount.trim(), notes: '', image: null },
-    ]);
-    setSelfCareName('');
-    setSelfCareAmount('');
-  }
-
-  function removeSelfCareItem(item) {
-    Alert.alert('Remove this item?', item.name, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove',
-        style: 'destructive',
-        onPress: () => setBodyInventory((prev) => prev.filter((x) => x.id !== item.id)),
-      },
-    ]);
-  }
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -256,13 +237,15 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
   })).filter((g) => g.items.length);
 
   return (
-    <View style={{ flex: 1 }}>
-      <ScrollView contentContainerStyle={shared.container}>
-        <Text style={shared.h1}>Inventory</Text>
-        <Text style={shared.tagline}>
-          {inventory.length} item{inventory.length === 1 ? '' : 's'}
+    <View style={styles.sectionBlock}>
+      <TouchableOpacity style={styles.sectionHead} onPress={onToggle}>
+        <Text style={shared.blockTitle}>Inventory (what you have)</Text>
+        <Text style={styles.sectionChevron}>
+          {inventory.length} {open ? '▲' : '▼'}
         </Text>
-
+      </TouchableOpacity>
+      {!open ? null : (
+      <>
         <TouchableOpacity style={styles.scanBtn} onPress={() => setScanOpen(true)}>
           <Text style={styles.scanBtnText}>📷 Scan a barcode</Text>
         </TouchableOpacity>
@@ -307,6 +290,10 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
             </View>
           );
         })()}
+
+        <TouchableOpacity style={styles.addItemLink} onPress={openAdd}>
+          <Text style={styles.addItemLinkText}>+ Add item by hand</Text>
+        </TouchableOpacity>
 
         {inventory.length === 0 ? (
           <View style={shared.block}>
@@ -381,68 +368,12 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
           ))
         )}
 
-        <View style={shared.block}>
-          <TouchableOpacity
-            style={styles.selfCareHead}
-            onPress={() => setSelfCareOpen((v) => !v)}
-          >
-            <Text style={shared.blockTitle}>Self Care</Text>
-            <Text style={styles.selfCareChevron}>
-              {(bodyInventory || []).length} {selfCareOpen ? '▲' : '▼'}
-            </Text>
-          </TouchableOpacity>
-          {selfCareOpen ? (
-            <>
-              {(bodyInventory || []).length === 0 ? (
-                <Text style={shared.tagline}>
-                  Nothing here yet — add shampoo, lotion, razors, whatever you
-                  restock.
-                </Text>
-              ) : (
-                (bodyInventory || []).map((it) => (
-                  <TouchableOpacity
-                    key={it.id}
-                    style={shared.row}
-                    onLongPress={() => removeSelfCareItem(it)}
-                    delayLongPress={400}
-                  >
-                    <Text style={shared.rowName}>{it.name}</Text>
-                    {it.amount ? <Text style={shared.rowRight}>{it.amount}</Text> : null}
-                  </TouchableOpacity>
-                ))
-              )}
-              <View style={styles.selfCareAddRow}>
-                <TextInput
-                  style={[styles.input, { flex: 2 }]}
-                  value={selfCareName}
-                  onChangeText={setSelfCareName}
-                  placeholder="Item name"
-                  placeholderTextColor="#9aa5b1"
-                />
-                <TextInput
-                  style={[styles.input, { flex: 1 }]}
-                  value={selfCareAmount}
-                  onChangeText={setSelfCareAmount}
-                  placeholder="Qty"
-                  placeholderTextColor="#9aa5b1"
-                />
-                <TouchableOpacity style={styles.selfCareAddBtn} onPress={addSelfCareItem}>
-                  <Text style={styles.selfCareAddBtnText}>Add</Text>
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.selfCareHint}>Long-press an item to remove it.</Text>
-            </>
-          ) : null}
-        </View>
-      </ScrollView>
+      </>
+      )}
 
       <Modal visible={scanOpen} animationType="slide" onRequestClose={() => setScanOpen(false)}>
         <BarcodeScanner onScanned={handleScanned} onClose={() => setScanOpen(false)} />
       </Modal>
-
-      <TouchableOpacity style={styles.fab} onPress={openAdd}>
-        <Text style={styles.fabText}>+</Text>
-      </TouchableOpacity>
 
       <Modal
         visible={modalOpen}
@@ -587,23 +518,22 @@ export default function InventoryScreen({ inventory, setInventory, bodyInventory
 }
 
 const styles = StyleSheet.create({
-  fab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 90,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: GOLD,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 4,
+  sectionBlock: {
+    marginBottom: 16,
+    backgroundColor: CARD,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 14,
   },
-  fabText: { color: '#fff', fontSize: 30, fontWeight: '400', marginTop: -2 },
+  sectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionChevron: { color: DIM, fontSize: 13, fontWeight: '700' },
+  addItemLink: { alignSelf: 'flex-start', marginBottom: 10, marginTop: 10 },
+  addItemLinkText: { color: GOLD, fontWeight: '700', fontSize: 13 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.4)',
@@ -633,21 +563,6 @@ const styles = StyleSheet.create({
   spoilExpired: { color: ROSE },
   spoilToday: { color: ROSE },
   spoilOk: { color: DIM, fontSize: 11, marginLeft: 8 },
-  selfCareHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  selfCareChevron: { color: DIM, fontSize: 13, fontWeight: '700' },
-  selfCareAddRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
-  selfCareAddBtn: {
-    backgroundColor: GOLD,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-  selfCareAddBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  selfCareHint: { color: DIM, fontSize: 11, marginTop: 8 },
   input: {
     backgroundColor: '#232d3a',
     borderRadius: 10,

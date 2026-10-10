@@ -75,6 +75,20 @@ export function appendProgressLog(item, newValue) {
 // even if the person is still only 3 episodes into watching it. That
 // distinction (released vs. watched) is the point: it answers "has this
 // finished airing yet", which the watched count alone can't.
+// Whole calendar days between today and a Coming Soon item's release
+// date - negative once it's passed (shouldn't normally be seen, since
+// TrackerScreen auto-clears "coming_soon" the day a known release date
+// arrives), null for free-text dates ("Fall 2026", "TBA") since there's
+// no real date to count down to.
+export function daysUntilRelease(releaseDate) {
+  if (!releaseDate || !/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)) return null;
+  const target = new Date(releaseDate + 'T00:00:00');
+  if (isNaN(target.getTime())) return null;
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((target - startOfToday) / (24 * 60 * 60 * 1000));
+}
+
 export function releasedEpisodeCount(airDate, epTotal) {
   const total = Number(epTotal) || 0;
   if (!airDate || total <= 0) return null;

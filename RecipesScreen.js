@@ -10,6 +10,7 @@ import {
   StyleSheet,
   Alert,
   Linking,
+  useWindowDimensions,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { pickCompressedImage } from './imagePicker';
@@ -22,6 +23,9 @@ import {
   fetchVideoOEmbed,
 } from './videoRecipeHelper';
 import { WebView } from 'react-native-webview';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import BarcodeScanner from './BarcodeScanner';
+import { lookupBarcode, addDaysISO, spoilStatus } from './barcodeLookup';
 import { RECIPES_THEME } from './pageThemes';
 import PageHeader from './PageHeader';
 import HomesteadScreen from './HomesteadScreen';
@@ -137,9 +141,27 @@ function normalizeWord(w) {
   return w.replace(/s$/, '');
 }
 
+// Shared fuzzy name-vs-ingredient-text matcher, factored out so both
+// Inventory and (now) the Homestead garden can be checked the same way:
+// direct substring match, then whole-word overlap, then a last-resort
+// match on just the core (final) word of the name.
+function textMatchesIngredient(name, rawText, textWords) {
+  const n = (name || '').toLowerCase().trim();
+  if (!n) return false;
+  if (rawText.includes(n) || n.includes(rawText)) return true;
+  const words = n.split(/[^a-z]+/).filter(Boolean).map(normalizeWord);
+  if (!words.length) return false;
+  if (words.every((w) => textWords.includes(w))) return true;
+  const coreWord = words[words.length - 1];
+  return coreWord.length > 2 && textWords.includes(coreWord);
+}
+
 // Ported from the web app: fuzzy-matches an ingredient's text (or its
-// direct invItemId link) against what's currently in Inventory.
-function ingredientHave(ing, inventory) {
+// direct invItemId link) against what's currently in Inventory - and,
+// now, also against what's ready-to-harvest (or already harvested) in
+// the Homestead garden, so "what can I cook" accounts for what's
+// growing at home, not just what's in a cupboard.
+function ingredientHave(ing, inventory, gardenItems) {
   if (ing.invItemId && inventory.some((inv) => inv.id === ing.invItemId)) {
     return true;
   }
@@ -153,16 +175,67 @@ function ingredientHave(ing, inventory) {
     .split(/[^a-z]+/)
     .filter(Boolean)
     .map(normalizeWord);
-  return inventory.some((inv) => {
-    const invName = (inv.name || '').toLowerCase().trim();
-    if (!invName) return false;
-    if (rawText.includes(invName) || invName.includes(rawText)) return true;
-    const invWords = invName.split(/[^a-z]+/).filter(Boolean).map(normalizeWord);
-    if (!invWords.length) return false;
-    if (invWords.every((iw) => textWords.includes(iw))) return true;
-    const coreWord = invWords[invWords.length - 1];
-    return coreWord.length > 2 && textWords.includes(coreWord);
-  });
+  if (inventory.some((inv) => textMatchesIngredient(inv.name, rawText, textWords))) {
+    return true;
+  }
+  // Only "ready" or already-"harvested" garden items count as something
+  // you actually have in hand - a seedling still weeks from picking
+  // isn't something you can cook with tonight (see ingredientGrowingInfo
+  // below for surfacing that case separately).
+  return (gardenItems || []).some(
+    (g) =>
+      (g.status === 'ready' || g.status === 'harvested') &&
+      textMatchesIngredient(g.name, rawText, textWords)
+  );
+}
+
+// For an ingredient that isn't available yet, tells you whether it's at
+// least on the way - something still growing in the garden. Kept
+// separate from ingredientHave() on purpose: "growing" should surface as
+// a hint ("ready in ~12 days"), not flip the recipe to "ready to cook".
+function ingredientGrowingInfo(ing, gardenItems) {
+  const rawText = (ing.text || '').toLowerCase();
+  const textWords = rawText.split(/[^a-z]+/).filter(Boolean).map(normalizeWord);
+  return (
+    (gardenItems || []).find(
+      (g) => g.status === 'growing' && textMatchesIngredient(g.name, rawText, textWords)
+    ) || null
+  );
+}
+
+// Rough keyword -> preserving-method guesses, so a grocery/staple name
+// can surface a "this is usually preserved by X" hint without needing
+// anything hand-tagged first. Deliberately broad and best-effort - it's
+// a starting suggestion to send to Homestead, not a canning authority.
+const PRESERVE_HINTS = [
+  { match: ['egg'], category: 'Pickle', label: 'Pickled eggs' },
+  { match: ['milk', 'cream', 'yogurt', 'yoghurt'], category: 'Fermented', label: 'Cultured/fermented' },
+  { match: ['cucumber', 'pickle'], category: 'Pickle', label: 'Pickles' },
+  { match: ['pepper', 'jalapeno', 'jalapeño'], category: 'Pickle', label: 'Pickled peppers' },
+  { match: ['tomato'], category: 'Sauce', label: 'Sauce/canned' },
+  { match: ['berry', 'berries', 'strawberry', 'strawberries', 'jam', 'fruit', 'peach', 'apple', 'apricot', 'plum', 'cherry'], category: 'Jam', label: 'Jam/preserves' },
+  { match: ['cabbage', 'kraut'], category: 'Fermented', label: 'Fermented (kraut)' },
+  { match: ['herb', 'basil', 'thyme', 'oregano', 'rosemary', 'mint', 'parsley', 'cilantro', 'dill'], category: 'Dried', label: 'Dried herbs' },
+  { match: ['bean', 'corn', 'pea', 'carrot', 'squash', 'zucchini'], category: 'Frozen', label: 'Frozen/canned' },
+  { match: ['meat', 'beef', 'pork', 'chicken', 'fish', 'venison'], category: 'Frozen', label: 'Frozen/cured' },
+];
+
+// Matches HomesteadScreen.js's own formatDate() - kept as a tiny local
+// copy rather than an import since Homestead doesn't export it.
+function formatGardenDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function suggestPreserveFor(name) {
+  const n = (name || '').toLowerCase();
+  if (!n) return null;
+  for (const hint of PRESERVE_HINTS) {
+    if (hint.match.some((kw) => n.includes(kw))) return hint;
+  }
+  return null;
 }
 
 function parseQty(text) {
@@ -197,7 +270,10 @@ export default function RecipesScreen({
   setGardenItems,
   preservedItems,
   setPreservedItems,
+  groceryStaples,
+  setGroceryStaples,
 }) {
+  const { width: winWidth } = useWindowDimensions();
   const [subTab, setSubTab] = useState('recipes');
   // Recipe list search + readiness filter - as the list grows past a
   // handful of recipes it stops being possible to eyeball which ones you
@@ -240,6 +316,247 @@ export default function RecipesScreen({
   const [groModalOpen, setGroModalOpen] = useState(false);
   const [groEditingId, setGroEditingId] = useState(null);
   const [groDraft, setGroDraft] = useState({ name: '', category: 'Pantry', amount: '', price: '' });
+
+  // --- Pantry inventory ("what you have") ---
+  // Used to be its own standalone Inventory tab; now rendered as part of
+  // the SAME per-category rows as staples/groceries below (not a
+  // separate boxed-off section) so "have" and "need" read as one list,
+  // not three stacked widgets.
+  const [invModalOpen, setInvModalOpen] = useState(false);
+  const [invEditingId, setInvEditingId] = useState(null);
+  const [invShowDatePicker, setInvShowDatePicker] = useState(false);
+  const [invDraft, setInvDraft] = useState({
+    name: '',
+    category: 'Pantry',
+    amount: '',
+    qty: '',
+    expDate: '',
+    image: null,
+  });
+  const [invItemPrice, setInvItemPrice] = useState('');
+  const [invScanOpen, setInvScanOpen] = useState(false);
+  const [invScanBusy, setInvScanBusy] = useState(false);
+
+  function formatInvDateForStorage(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  function formatInvDateForDisplay(iso) {
+    if (!iso) return 'Select a date';
+    const d = new Date(iso + 'T00:00:00');
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  async function handleInvScanned(code) {
+    setInvScanBusy(true);
+    const result = await lookupBarcode(code);
+    setInvScanOpen(false);
+    setInvScanBusy(false);
+    setInvEditingId(null);
+    if (result.found) {
+      setInvDraft({
+        name: result.name,
+        category: result.category,
+        amount: result.amount || '',
+        qty: '1',
+        expDate: addDaysISO(result.shelfLifeDays),
+        image: result.image || null,
+      });
+      if (!result.image) {
+        Alert.alert(
+          'No photo available',
+          "Found \"" + result.name + '\" but the database has no photo for it. Everything else is filled in - you can add your own photo in the form.'
+        );
+      }
+    } else {
+      setInvDraft({ name: '', category: 'Pantry', amount: '', qty: '1', expDate: '', image: null });
+      Alert.alert(
+        'Not in the database',
+        result.error
+          ? "Couldn't reach the product database. Enter the item manually."
+          : "That barcode isn't in the open product database — common for loose produce and store brands. Enter the name yourself and it'll save normally."
+      );
+    }
+    setInvModalOpen(true);
+  }
+
+  function openInvAdd() {
+    setInvEditingId(null);
+    setInvDraft({ name: '', category: 'Pantry', amount: '', qty: '', expDate: '', image: null });
+    setInvItemPrice('');
+    setInvModalOpen(true);
+  }
+
+  function openInvEdit(item) {
+    setInvEditingId(item.id);
+    setInvDraft({
+      name: item.name || '',
+      category: item.category || 'Pantry',
+      amount: item.amount || '',
+      qty: item.qty != null ? String(item.qty) : '',
+      expDate: item.expDate || '',
+      image: item.image || null,
+    });
+    setInvItemPrice(String(latestGroceryPrice(item) || ''));
+    setInvModalOpen(true);
+  }
+
+  async function pickInvImage() {
+    const result = await pickCompressedImage();
+    if (result.error === 'permission') {
+      Alert.alert('Permission needed', 'Photo library access is required.');
+      return;
+    }
+    if (result.uri) {
+      setInvDraft((d) => ({ ...d, image: result.uri }));
+    }
+  }
+
+  function saveInvItem() {
+    if (!invDraft.name.trim()) {
+      Alert.alert('Name required', 'Give this item a name first.');
+      return;
+    }
+    const qtyNum = invDraft.qty.trim() === '' ? null : Number(invDraft.qty);
+    const existing = invEditingId ? inventory.find((it) => it.id === invEditingId) : null;
+    const priceHistory = existing ? existing.priceHistory || [] : [];
+    const newPrice = Number(invItemPrice) || 0;
+    const currentLatest = existing ? latestGroceryPrice(existing) : 0;
+    const updatedHistory =
+      newPrice > 0 && newPrice !== currentLatest
+        ? [...priceHistory, { price: newPrice, date: Date.now() }]
+        : priceHistory;
+    const item = {
+      id: invEditingId || makeId('inv'),
+      name: invDraft.name.trim(),
+      category: invDraft.category,
+      amount: invDraft.amount.trim(),
+      qty: qtyNum,
+      expDate: invDraft.expDate.trim(),
+      image: invDraft.image,
+      priceHistory: updatedHistory,
+    };
+    if (invEditingId) {
+      setInventory((prev) => prev.map((it) => (it.id === invEditingId ? item : it)));
+    } else {
+      setInventory((prev) => [...prev, item]);
+    }
+    setInvModalOpen(false);
+  }
+
+  function deleteInvItemById(id) {
+    Alert.alert('Delete item?', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => setInventory((prev) => prev.filter((it) => it.id !== id)),
+      },
+    ]);
+  }
+
+  function deleteInvItem() {
+    Alert.alert('Delete item?', 'This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setInventory((prev) => prev.filter((it) => it.id !== invEditingId));
+          setInvModalOpen(false);
+        },
+      },
+    ]);
+  }
+
+  // --- Recurring grocery staples ("things that are a must") ---
+  const [stapleModalOpen, setStapleModalOpen] = useState(false);
+  const [stapleDraft, setStapleDraft] = useState({ name: '', category: 'Pantry' });
+
+  function openStapleAdd() {
+    setStapleDraft({ name: '', category: 'Pantry' });
+    setStapleModalOpen(true);
+  }
+
+  function saveStaple() {
+    const name = stapleDraft.name.trim();
+    if (!name) {
+      Alert.alert('Name required', 'Give this staple a name.');
+      return;
+    }
+    setGroceryStaples((prev) => [
+      ...(prev || []),
+      { id: makeId('st'), name, category: stapleDraft.category, haveIt: true, addedAt: Date.now() },
+    ]);
+    setStapleModalOpen(false);
+  }
+
+  function toggleStapleHave(id) {
+    setGroceryStaples((prev) =>
+      (prev || []).map((s) => (s.id === id ? { ...s, haveIt: !s.haveIt } : s))
+    );
+  }
+
+  function deleteStaple(id, name) {
+    Alert.alert('Remove staple?', `Stop tracking "${name}" as a must-have?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: () => setGroceryStaples((prev) => (prev || []).filter((s) => s.id !== id)),
+      },
+    ]);
+  }
+
+  // Pushes every staple currently marked "out" onto the regular grocery
+  // list in one tap, so shopping day is "open the app, buy what's lit
+  // up" instead of re-deriving it from memory each time.
+  function addMissingStaplesToGroceries() {
+    const missing = (groceryStaples || []).filter((s) => !s.haveIt);
+    if (!missing.length) {
+      Alert.alert('Nothing needed', 'Every staple is already marked as on hand.');
+      return;
+    }
+    setGroceries((prev) => [
+      ...prev,
+      ...missing.map((s) => ({
+        id: makeId('gy'),
+        name: s.name,
+        category: s.category || 'Pantry',
+        amount: '',
+        priceHistory: [],
+        image: null,
+        addedAt: Date.now(),
+      })),
+    ]);
+    Alert.alert('Added', `${missing.length} staple${missing.length === 1 ? '' : 's'} added to your grocery list.`);
+  }
+
+  // Sends a grocery/staple item straight into Homestead's preserving
+  // tracker with a best-guess category pre-filled, so "I know how to
+  // preserve this" doesn't require re-typing anything by hand.
+  function sendToHomesteadPreserving(name, suggestedCategory) {
+    setPreservedItems((prev) => [
+      ...(prev || []),
+      {
+        id: makeId('pv'),
+        name,
+        category: suggestedCategory || 'Other',
+        datePreserved: new Date().toISOString().slice(0, 10),
+        jarCount: '',
+        expiryDate: '',
+        sourceGardenId: null,
+        notes: `Suggested from groceries: ${name}`,
+        image: null,
+        addedAt: Date.now(),
+      },
+    ]);
+    Alert.alert('Added to Homestead', `"${name}" added under Homestead → Preserving. Fill in jar count/dates there.`);
+  }
 
   const [linkOpen, setLinkOpen] = useState(false);
   const [linkIngredientId, setLinkIngredientId] = useState(null);
@@ -922,6 +1239,45 @@ export default function RecipesScreen({
             </View>
           ) : (
             <>
+              {(() => {
+                // Always computed off the full list (not the search/filter
+                // below) so this stays a constant "here's what's actually
+                // cookable right now" spotlight regardless of what's typed
+                // in the search box.
+                const cookNow = recipes.filter((r) => {
+                  const real = (r.ingredients || []).filter((i) => !i.isHeader);
+                  return real.length > 0 && real.every((i) => ingredientHave(i, inventory, gardenItems));
+                });
+                if (!cookNow.length) return null;
+                return (
+                  <View style={styles.cookNowBlock}>
+                    <Text style={styles.cookNowTitle}>🍳 You can cook right now</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      {cookNow.map((r) => (
+                        <TouchableOpacity
+                          key={r.id}
+                          style={styles.cookNowCard}
+                          onPress={() => setDetailId(r.id)}
+                        >
+                          {r.image ? (
+                            <Image source={{ uri: r.image }} style={styles.cookNowImg} />
+                          ) : (
+                            <View style={[styles.cookNowImg, styles.thumbPlaceholder]}>
+                              <Text style={styles.thumbLetter}>
+                                {(r.title || '?').charAt(0).toUpperCase()}
+                              </Text>
+                            </View>
+                          )}
+                          <Text style={styles.cookNowCardTitle} numberOfLines={2}>
+                            {r.title}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                );
+              })()}
+
               <View style={styles.recipeToolbar}>
                 <TextInput
                   value={recipeSearch}
@@ -965,7 +1321,7 @@ export default function RecipesScreen({
                   .filter((r) => {
                     if (recipeFilter === 'all') return true;
                     const real = (r.ingredients || []).filter((i) => !i.isHeader);
-                    const missing = real.filter((i) => !ingredientHave(i, inventory)).length;
+                    const missing = real.filter((i) => !ingredientHave(i, inventory, gardenItems)).length;
                     return recipeFilter === 'ready' ? missing === 0 : missing > 0;
                   });
                 if (filtered.length === 0) {
@@ -975,76 +1331,234 @@ export default function RecipesScreen({
                     </View>
                   );
                 }
-                return filtered.map((r) => {
-                  const real = (r.ingredients || []).filter((i) => !i.isHeader);
-                  const missing = real.filter((i) => !ingredientHave(i, inventory)).length;
-                  return (
-                    <TouchableOpacity
-                      key={r.id}
-                      style={shared.row}
-                      onPress={() => setDetailId(r.id)}
-                      onLongPress={() => deleteRecipeById(r.id, r.title)}
-                    >
-                      {r.image ? (
-                        <Image source={{ uri: r.image }} style={shared.thumb66} />
-                      ) : (
-                        <View style={[shared.thumb66, styles.thumbPlaceholder]}>
-                          <Text style={styles.thumbLetter}>
-                            {(r.title || '?').charAt(0).toUpperCase()}
-                          </Text>
-                        </View>
-                      )}
-                      <View style={{ flex: 1, marginLeft: 10 }}>
-                        <Text style={{ fontSize: 15, fontWeight: '600', color: INK }}>
-                          {r.title}
-                        </Text>
-                        <Text style={shared.tagline}>
-                          {r.videoUrl ? '🎥 ' : ''}
-                          {real.length} ingredient{real.length === 1 ? '' : 's'}
-                          {missing > 0 ? ` • ${missing} missing` : real.length ? ' • have everything' : ''}
-                        </Text>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                });
+                // 2-up image-forward grid, sized off the live window width
+                // rather than a percentage + aspectRatio combo - that
+                // combination resolves to height 0 inside a flexWrap row
+                // on this RN/Yoga version (see TrackerCard.js for the same
+                // fix applied there).
+                const RECIPE_GRID_PADDING = 16;
+                const RECIPE_CARD_GAP = 12;
+                const cardWidth = (winWidth - RECIPE_GRID_PADDING * 2 - RECIPE_CARD_GAP) / 2;
+                return (
+                  <View style={styles.recipeGrid}>
+                    {filtered.map((r) => {
+                      const real = (r.ingredients || []).filter((i) => !i.isHeader);
+                      const missing = real.filter((i) => !ingredientHave(i, inventory, gardenItems)).length;
+                      const ready = real.length > 0 && missing === 0;
+                      return (
+                        <TouchableOpacity
+                          key={r.id}
+                          style={[styles.recipeCard, { width: cardWidth }]}
+                          onPress={() => setDetailId(r.id)}
+                          onLongPress={() => deleteRecipeById(r.id, r.title)}
+                        >
+                          {r.image ? (
+                            <Image source={{ uri: r.image }} style={[styles.recipeCardImg, { width: cardWidth, height: cardWidth }]} />
+                          ) : (
+                            <View style={[styles.recipeCardImg, { width: cardWidth, height: cardWidth }, styles.thumbPlaceholder]}>
+                              <Text style={styles.thumbLetterBig}>
+                                {(r.title || '?').charAt(0).toUpperCase()}
+                              </Text>
+                            </View>
+                          )}
+                          <View style={styles.recipeCardBody}>
+                            <Text style={styles.recipeCardTitle} numberOfLines={2}>
+                              {r.videoUrl ? '🎥 ' : ''}
+                              {r.title}
+                            </Text>
+                            {real.length ? (
+                              <View
+                                style={[
+                                  styles.recipeBadge,
+                                  { backgroundColor: ready ? 'rgba(46,158,91,0.18)' : 'rgba(234,90,95,0.18)' },
+                                ]}
+                              >
+                                <Text style={[styles.recipeBadgeText, { color: ready ? '#2e9e5b' : ROSE }]}>
+                                  {ready ? '✅ Ready to cook' : `🛒 ${missing} missing`}
+                                </Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                );
               })()}
             </>
           )
-        ) : groceries.length === 0 ? (
-          <View style={shared.block}>
-            <Text style={{ fontSize: 16, fontWeight: '600', color: INK, marginBottom: 4 }}>
-              Nothing on your list
-            </Text>
-            <Text style={shared.tagline}>Tap + to add something to buy.</Text>
-          </View>
         ) : (
-          GRO_CATEGORIES.map((cat) => {
-            const items = groceries.filter((g) => g.category === cat);
-            if (!items.length) return null;
-            return (
-              <View key={cat} style={shared.block}>
-                <Text style={shared.catHead}>{cat}</Text>
-                {items.map((g) => (
-                  <TouchableOpacity
-                    key={g.id}
-                    style={shared.row}
-                    onPress={() => openGroEdit(g)}
-                  >
-                    {g.image ? (
-                      <Image source={{ uri: g.image }} style={shared.thumb44} />
-                    ) : null}
-                    <Text style={shared.rowName}>{g.name}</Text>
-                    {g.amount ? <Text style={shared.rowRight}>{g.amount}</Text> : null}
-                    {latestGroceryPrice(g) > 0 ? (
-                      <Text style={[shared.rowRight, { marginLeft: 8, color: GOLD }]}>
-                        ${latestGroceryPrice(g).toFixed(2)}
+          <>
+            {/* One combined quick-action row instead of three separate
+                widgets - "Have" (pantry), "Staple" (recurring must-have)
+                and "Buy" (one-off) all feed the SAME per-category list
+                below, so have/need reads as one feature. */}
+            <View style={styles.groActionsRow}>
+              <TouchableOpacity style={styles.groActionBtn} onPress={openInvAdd}>
+                <Text style={styles.groActionBtnText}>+ Have</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.groActionBtn} onPress={() => setInvScanOpen(true)}>
+                <Text style={styles.groActionBtnText}>📷 Scan</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.groActionBtn} onPress={openStapleAdd}>
+                <Text style={styles.groActionBtnText}>+ Staple</Text>
+              </TouchableOpacity>
+            </View>
+
+            {(() => {
+              const flagged = inventory
+                .map((it) => ({ it, st: spoilStatus(it) }))
+                .filter((x) => x.st && x.st.level !== 'ok')
+                .sort((a, b) => a.st.days - b.st.days);
+              if (!flagged.length) return null;
+              return (
+                <View style={[shared.block, styles.spoilBlock]}>
+                  <View style={shared.blockHead}>
+                    <Text style={shared.blockTitle}>Use These First</Text>
+                    <View style={shared.countBadge}>
+                      <Text style={shared.countBadgeText}>{flagged.length}</Text>
+                    </View>
+                  </View>
+                  {flagged.map(({ it, st }) => (
+                    <TouchableOpacity
+                      key={it.id}
+                      style={shared.row}
+                      onPress={() => openInvEdit(it)}
+                      onLongPress={() => deleteInvItemById(it.id)}
+                      delayLongPress={400}
+                    >
+                      <View style={{ flex: 1 }}>
+                        <Text style={shared.rowName}>{it.name}</Text>
+                      </View>
+                      <Text
+                        style={[
+                          styles.spoilTag,
+                          st.level === 'expired' && styles.spoilExpired,
+                          st.level === 'today' && styles.spoilToday,
+                        ]}
+                      >
+                        {st.label}
                       </Text>
-                    ) : null}
-                  </TouchableOpacity>
-                ))}
-              </View>
-            );
-          })
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              );
+            })()}
+
+            {(() => {
+              const totalCount = inventory.length + (groceryStaples || []).length + groceries.length;
+              if (totalCount === 0) {
+                return (
+                  <View style={shared.block}>
+                    <Text style={{ fontSize: 16, fontWeight: '600', color: INK, marginBottom: 4 }}>
+                      Nothing tracked yet
+                    </Text>
+                    <Text style={shared.tagline}>
+                      Use + Have for what's in the pantry, + Staple for recurring
+                      must-haves, and the + button below for a one-off buy.
+                    </Text>
+                  </View>
+                );
+              }
+              return GRO_CATEGORIES.map((cat) => {
+                const invItems = inventory.filter((i) => i.category === cat);
+                const stapleItems = (groceryStaples || []).filter((s) => s.category === cat);
+                const needItems = groceries.filter((g) => g.category === cat);
+                if (!invItems.length && !stapleItems.length && !needItems.length) return null;
+                return (
+                  <View key={cat} style={shared.block}>
+                    <Text style={shared.catHead}>{cat}</Text>
+
+                    {invItems.map((it) => (
+                      <TouchableOpacity
+                        key={it.id}
+                        style={shared.row}
+                        onPress={() => openInvEdit(it)}
+                        onLongPress={() => deleteInvItemById(it.id)}
+                        delayLongPress={400}
+                      >
+                        {it.image ? (
+                          <Image source={{ uri: it.image }} style={shared.thumb44} />
+                        ) : null}
+                        <View style={{ flex: 1, marginLeft: it.image ? 8 : 0 }}>
+                          <Text style={shared.rowName}>{it.name}</Text>
+                          {it.qty != null ? (
+                            <Text style={styles.comboMeta}>Qty {it.qty}</Text>
+                          ) : it.amount ? (
+                            <Text style={styles.comboMeta}>{it.amount}</Text>
+                          ) : null}
+                        </View>
+                        <View style={[styles.comboPill, styles.comboPillHave]}>
+                          <Text style={[styles.comboPillText, { color: '#2e9e5b' }]}>✓ Have</Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+
+                    {stapleItems.map((s) => (
+                      <TouchableOpacity
+                        key={s.id}
+                        style={shared.row}
+                        onPress={() => toggleStapleHave(s.id)}
+                        onLongPress={() => deleteStaple(s.id, s.name)}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text style={[shared.rowName, !s.haveIt && styles.stapleNameOut]}>{s.name}</Text>
+                          <Text style={styles.comboMeta}>Staple</Text>
+                        </View>
+                        <View style={[styles.comboPill, s.haveIt ? styles.comboPillHave : styles.comboPillNeed]}>
+                          <Text style={[styles.comboPillText, { color: s.haveIt ? '#2e9e5b' : ROSE }]}>
+                            {s.haveIt ? '✓ Have' : 'Need'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+
+                    {needItems.map((g) => {
+                      const preserveHint = suggestPreserveFor(g.name);
+                      return (
+                        <View key={g.id}>
+                          <TouchableOpacity style={shared.row} onPress={() => openGroEdit(g)}>
+                            {g.image ? (
+                              <Image source={{ uri: g.image }} style={shared.thumb44} />
+                            ) : null}
+                            <View style={{ flex: 1, marginLeft: g.image ? 8 : 0 }}>
+                              <Text style={shared.rowName}>{g.name}</Text>
+                              {g.amount || latestGroceryPrice(g) > 0 ? (
+                                <Text style={styles.comboMeta}>
+                                  {g.amount}
+                                  {g.amount && latestGroceryPrice(g) > 0 ? ' · ' : ''}
+                                  {latestGroceryPrice(g) > 0 ? `$${latestGroceryPrice(g).toFixed(2)}` : ''}
+                                </Text>
+                              ) : null}
+                            </View>
+                            <View style={[styles.comboPill, styles.comboPillNeed]}>
+                              <Text style={[styles.comboPillText, { color: ROSE }]}>🛒 Buy</Text>
+                            </View>
+                          </TouchableOpacity>
+                          {preserveHint ? (
+                            <TouchableOpacity
+                              style={styles.preserveHintRow}
+                              onPress={() => sendToHomesteadPreserving(g.name, preserveHint.category)}
+                            >
+                              <Text style={styles.preserveHintText}>
+                                🫙 Can be preserved ({preserveHint.label}) · tap to add to Homestead
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
+                      );
+                    })}
+                  </View>
+                );
+              });
+            })()}
+
+            {(groceryStaples || []).some((s) => !s.haveIt) ? (
+              <TouchableOpacity style={styles.staplesBuyBtn} onPress={addMissingStaplesToGroceries}>
+                <Text style={styles.staplesBuyBtnText}>Add missing staples to grocery list</Text>
+              </TouchableOpacity>
+            ) : null}
+          </>
         )}
       </ScrollView>
       )}
@@ -1130,7 +1644,7 @@ export default function RecipesScreen({
                   <>
                     {(() => {
                       const real = detailRecipe.ingredients.filter((i) => !i.isHeader);
-                      const have = real.filter((i) => ingredientHave(i, inventory)).length;
+                      const have = real.filter((i) => ingredientHave(i, inventory, gardenItems)).length;
                       const missing = real.length - have;
                       return (
                         <View style={styles.summaryRow}>
@@ -1147,19 +1661,28 @@ export default function RecipesScreen({
                           </Text>
                         );
                       }
-                      const have = ingredientHave(ing, inventory);
+                      const have = ingredientHave(ing, inventory, gardenItems);
                       const stock = ingredientStockInfo(ing, inventory);
                       const low = stock && stock.low;
+                      const growing = !have ? ingredientGrowingInfo(ing, gardenItems) : null;
                       return (
                         <TouchableOpacity
                           key={ing.id}
                           style={styles.ingRow}
                           onPress={() => openIngredientLink(ing.id)}
                         >
-                          <Text style={styles.ingText}>
-                            {ing.invItemId ? '🔗 ' : ''}
-                            {ing.text}
-                          </Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.ingText}>
+                              {ing.invItemId ? '🔗 ' : ''}
+                              {ing.text}
+                            </Text>
+                            {growing ? (
+                              <Text style={styles.ingGrowingHint}>
+                                🌱 Growing in your garden
+                                {growing.expectedHarvestDate ? ` · ready ${formatGardenDate(growing.expectedHarvestDate)}` : ''}
+                              </Text>
+                            ) : null}
+                          </View>
                           <Text
                             style={[
                               styles.ingBadge,
@@ -1444,6 +1967,186 @@ export default function RecipesScreen({
             >
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Add staple modal */}
+      <Modal
+        visible={stapleModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setStapleModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Add Staple</Text>
+            <Text style={styles.label}>Name</Text>
+            <TextInput
+              style={styles.input}
+              value={stapleDraft.name}
+              onChangeText={(v) => setStapleDraft((d) => ({ ...d, name: v }))}
+              placeholder="e.g. Eggs"
+              placeholderTextColor="#9aa5b1"
+            />
+            <Text style={styles.label}>Category</Text>
+            <View style={styles.catRow}>
+              {GRO_CATEGORIES.map((cat) => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[
+                    styles.catChip,
+                    stapleDraft.category === cat && styles.catChipSel,
+                  ]}
+                  onPress={() => setStapleDraft((d) => ({ ...d, category: cat }))}
+                >
+                  <Text
+                    style={[
+                      styles.catChipText,
+                      stapleDraft.category === cat && styles.catChipTextSel,
+                    ]}
+                  >
+                    {cat}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity style={styles.saveBtn} onPress={saveStaple}>
+              <Text style={styles.saveBtnText}>Add Staple</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => setStapleModalOpen(false)}
+            >
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Barcode scan (pantry inventory) */}
+      <Modal visible={invScanOpen} animationType="slide" onRequestClose={() => setInvScanOpen(false)}>
+        <BarcodeScanner onScanned={handleInvScanned} onClose={() => setInvScanOpen(false)} />
+      </Modal>
+
+      {/* Add/Edit pantry inventory item modal */}
+      <Modal
+        visible={invModalOpen}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setInvModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.sheet}>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              <Text style={styles.sheetTitle}>
+                {invEditingId ? 'Edit Item' : 'Add Item You Have'}
+              </Text>
+
+              {invDraft.image ? (
+                <Image source={{ uri: invDraft.image }} style={styles.hero} />
+              ) : null}
+              <TouchableOpacity style={styles.imgBtn} onPress={pickInvImage}>
+                <Text style={styles.imgBtnText}>{invDraft.image ? 'Change Photo' : 'Add Photo'}</Text>
+              </TouchableOpacity>
+
+              <Text style={styles.label}>Name</Text>
+              <TextInput
+                style={styles.input}
+                value={invDraft.name}
+                onChangeText={(v) => setInvDraft((d) => ({ ...d, name: v }))}
+                placeholder="e.g. Milk"
+                placeholderTextColor="#9aa5b1"
+              />
+
+              <Text style={styles.label}>Category</Text>
+              <View style={styles.catRow}>
+                {GRO_CATEGORIES.map((cat) => (
+                  <TouchableOpacity
+                    key={cat}
+                    style={[styles.catChip, invDraft.category === cat && styles.catChipSel]}
+                    onPress={() => setInvDraft((d) => ({ ...d, category: cat }))}
+                  >
+                    <Text style={[styles.catChipText, invDraft.category === cat && styles.catChipTextSel]}>
+                      {cat}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.label}>Amount (optional, e.g. "half gallon")</Text>
+              <TextInput
+                style={styles.input}
+                value={invDraft.amount}
+                onChangeText={(v) => setInvDraft((d) => ({ ...d, amount: v }))}
+                placeholder="Amount"
+                placeholderTextColor="#9aa5b1"
+              />
+
+              <Text style={styles.label}>Quantity (optional, whole number)</Text>
+              <TextInput
+                style={styles.input}
+                value={invDraft.qty}
+                onChangeText={(v) => setInvDraft((d) => ({ ...d, qty: v }))}
+                placeholder="e.g. 3"
+                placeholderTextColor="#9aa5b1"
+                keyboardType="numeric"
+              />
+
+              <Text style={styles.label}>Expiration Date (optional)</Text>
+              <TouchableOpacity style={styles.input} onPress={() => setInvShowDatePicker(true)}>
+                <Text style={{ color: invDraft.expDate ? INK : '#9aa5b1', fontSize: 15 }}>
+                  {formatInvDateForDisplay(invDraft.expDate)}
+                </Text>
+              </TouchableOpacity>
+              {invDraft.expDate ? (
+                <TouchableOpacity
+                  onPress={() => setInvDraft((d) => ({ ...d, expDate: '' }))}
+                  style={{ marginTop: -8, marginBottom: 14 }}
+                >
+                  <Text style={{ color: DIM, fontSize: 12 }}>Clear date</Text>
+                </TouchableOpacity>
+              ) : null}
+              {invShowDatePicker ? (
+                <DateTimePicker
+                  value={invDraft.expDate ? new Date(invDraft.expDate + 'T00:00:00') : new Date()}
+                  mode="date"
+                  display="default"
+                  onChange={(event, selectedDate) => {
+                    setInvShowDatePicker(false);
+                    if (event.type === 'set' && selectedDate) {
+                      setInvDraft((d) => ({ ...d, expDate: formatInvDateForStorage(selectedDate) }));
+                    }
+                  }}
+                />
+              ) : null}
+
+              <View style={{ height: 1, backgroundColor: BORDER, marginVertical: 16 }} />
+
+              <Text style={styles.label}>Price</Text>
+              <TextInput
+                style={styles.input}
+                value={invItemPrice}
+                onChangeText={(v) => setInvItemPrice(v.replace(/[^0-9.]/g, ''))}
+                placeholder="0.00"
+                placeholderTextColor="#9aa5b1"
+                keyboardType="decimal-pad"
+              />
+
+              <TouchableOpacity style={styles.saveBtn} onPress={saveInvItem}>
+                <Text style={styles.saveBtnText}>{invEditingId ? 'Save Changes' : 'Add Item'}</Text>
+              </TouchableOpacity>
+
+              {invEditingId ? (
+                <TouchableOpacity style={styles.deleteBtn} onPress={deleteInvItem}>
+                  <Text style={styles.deleteBtnText}>Delete Item</Text>
+                </TouchableOpacity>
+              ) : null}
+
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setInvModalOpen(false)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1999,11 +2702,106 @@ const styles = StyleSheet.create({
   recipeFilterChipText: { fontSize: 12, fontWeight: '600', color: DIM },
   recipeFilterChipTextSel: { color: '#fff' },
   thumbPlaceholder: {
-    backgroundColor: '#232d3a',
+    // Warm tint pulled from the page's own accent rather than the
+    // generic blue-grey this used to borrow from another screen - that
+    // mismatch against the amber Recipes theme was part of what read as
+    // "not professional" here.
+    backgroundColor: 'rgba(217,164,65,0.14)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  thumbLetter: { fontSize: 22, fontWeight: '700', color: DIM },
+  thumbLetter: { fontSize: 22, fontWeight: '700', color: GOLD },
+  thumbLetterBig: { fontSize: 34, fontWeight: '700', color: GOLD },
+
+  // "Cook Now" spotlight strip
+  // No horizontal padding here - this sits directly inside the screen's
+  // ScrollView, whose shared.container already supplies 16px of side
+  // padding. Adding another 16 here was double-counting that inset,
+  // which (more importantly) threw off the 2-up grid's width math below
+  // enough to make every card wrap onto its own row instead of pairing
+  // up - that's what the oversized single-column cards were.
+  cookNowBlock: { marginBottom: 18 },
+  cookNowTitle: { fontSize: 15, fontWeight: '700', color: INK, marginBottom: 10, letterSpacing: 0.2 },
+  cookNowCard: {
+    width: 112,
+    marginRight: 10,
+    backgroundColor: CARD,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: 'hidden',
+    paddingBottom: 8,
+  },
+  cookNowImg: { width: 112, height: 90 },
+  cookNowCardTitle: { fontSize: 12, fontWeight: '600', color: INK, lineHeight: 15, paddingHorizontal: 8, marginTop: 6 },
+
+  // 2-up recipe card grid - same "no extra padding" note as cookNowBlock
+  // above applies here; the grid relies on shared.container's inset.
+  recipeGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  recipeCard: {
+    marginBottom: 12,
+    backgroundColor: CARD,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  recipeCardImg: { borderTopLeftRadius: 16, borderTopRightRadius: 16 },
+  recipeCardBody: { padding: 10 },
+  recipeCardTitle: { fontSize: 14, fontWeight: '600', color: INK, marginBottom: 6, minHeight: 34 },
+  recipeBadge: { alignSelf: 'flex-start', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
+  recipeBadgeText: { fontSize: 11, fontWeight: '700' },
+
+  // Combined Groceries view: one quick-action row + one row style shared
+  // by inventory/staple/need-to-buy items, so it reads as one feature
+  // instead of three stacked widgets.
+  groActionsRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  groActionBtn: {
+    flex: 1,
+    backgroundColor: CARD,
+    borderWidth: 1,
+    borderColor: BORDER,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  groActionBtnText: { color: GOLD, fontWeight: '700', fontSize: 13 },
+  stapleNameOut: { color: DIM, textDecorationLine: 'line-through' },
+  comboMeta: { fontSize: 11.5, color: DIM, marginTop: 2 },
+  comboPill: { borderRadius: 10, paddingHorizontal: 9, paddingVertical: 4, marginLeft: 8 },
+  comboPillHave: { backgroundColor: 'rgba(46,158,91,0.18)' },
+  comboPillNeed: { backgroundColor: 'rgba(234,90,95,0.18)' },
+  comboPillText: { fontSize: 11, fontWeight: '700', color: INK },
+  staplesBuyBtn: {
+    marginBottom: 16,
+    backgroundColor: GOLD,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  staplesBuyBtnText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+
+  // Pantry inventory "Use These First" (spoiling soon) banner
+  spoilBlock: { borderWidth: 1, borderColor: ROSE },
+  spoilTag: { color: GOLD, fontSize: 12, fontWeight: '800' },
+  spoilExpired: { color: ROSE },
+  spoilToday: { color: ROSE },
+
+  // Groceries -> Homestead preserving hint
+  preserveHintRow: { paddingLeft: 52, paddingBottom: 8, marginTop: -4 },
+  preserveHintText: { fontSize: 11.5, color: '#d9a441', fontStyle: 'italic' },
+
+  // Detail-modal ingredient row: garden "growing" hint
+  ingGrowingHint: { fontSize: 11.5, color: '#4fb894', marginTop: 2 },
   fab: {
     position: 'absolute',
     right: 20,

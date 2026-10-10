@@ -1119,6 +1119,10 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between',
     paddingTop: 4,
+    // Breaks out of the screen's usual 16px side padding by 6px a side -
+    // TrackerCard.js sizes each card assuming a 10px edge inset (16-6),
+    // so change that constant too if this one changes.
+    marginHorizontal: -6,
   },
   card: {
     flexDirection: 'row',

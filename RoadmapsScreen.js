@@ -16,7 +16,7 @@ import { ROADMAPS_THEME } from './pageThemes';
 import PageHeader from './PageHeader';
 import { xpForLevel, applyXPDelta, resetRoadmapProgress } from './leveling';
 import { DAY_LETTERS, toggleHabitCompletion, HABIT_POINTS, firstStepPerRoadmap } from './habitUtils';
-import HeroArena from './RoadmapIdleWorld';
+import RoadmapRealm from './RoadmapRealm';
 import RoadmapGuideView from './RoadmapGuideView';
 import RoadmapCourseView from './RoadmapCourseView';
 import { ROADMAP_GUIDES, guideStepCount, guideDoneCount } from './roadmapGuides';
@@ -748,19 +748,12 @@ export default function RoadmapsScreen({
 
     return (
       <View style={{ flex: 1, backgroundColor: '#0d141c' }}>
-        <HeroArena
-          level={level.level}
-          xp={level.xp}
-          hero={hero}
-          setHero={setHero}
+        <RoadmapRealm
+          level={level}
           habits={habits}
           cards={cards}
           stats={stats}
-          guideProgress={guideProgress}
           rewardPoints={rewardPoints}
-          setRewardPoints={setRewardPoints}
-          onFightMinion={fightMinion}
-          onBossDefeated={handleBossDefeated}
           onExit={() => onGoToCalendar && onGoToCalendar()}
           guides={guidesWithProgress}
           onOpenGuide={(id) => setOpenGuideId(id)}

@@ -14,11 +14,15 @@ import { shared, GOLD, ROSE, INK, DIM, CARD, BORDER } from './theme';
 import { fetchLinkPreview } from './linkPreview';
 import LinkCard from './LinkCard';
 
+// Inventory used to have its own tile here, pointing at the old
+// standalone Inventory tab. That tab is gone - it's the "what you have"
+// section inside Recipes -> Groceries now - so the tile is gone too
+// rather than pointing a dead end at Recipes under a label that no
+// longer matches what's there.
 const PERMANENT_TILES = [
   { id: 'recipes', name: 'Recipes', icon: '🍛', color: '#b8705c' },
   { id: 'dating', name: 'Dating', icon: '💕', color: '#b85c8f' },
   { id: 'traveling', name: 'Traveling', icon: '✈️', color: '#4a7ba6' },
-  { id: 'inventory', name: 'Inventory', icon: '📦', color: '#8a9a4b' },
   { id: 'restaurants', name: 'Restaurants', icon: '🍽️', color: '#c2685a' },
   { id: 'websites', name: 'Websites', icon: '🌐', color: '#3f8f82' },
 ];
@@ -77,7 +81,6 @@ export default function InformationScreen({
     if (id === 'recipes') return onNavigate('recipes');
     if (id === 'dating') return onNavigate('places', 'dating');
     if (id === 'traveling') return onNavigate('travel');
-    if (id === 'inventory') return onNavigate('inventory');
     if (id === 'restaurants') return onNavigate('restaurants');
     // Websites, and any leftover custom categories, are a link tracker -
     // opens as its own full page below, not a popup over this one.
